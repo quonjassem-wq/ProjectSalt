@@ -52,6 +52,7 @@
             100% { transform: translate(5%, 5%) scale(1.1); }
         }
 
+        /* Main page container */
         .hero {
             text-align: center;
             z-index: 2;
@@ -231,69 +232,154 @@
             padding-top: 1rem;
         }
 
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.96);
-            backdrop-filter: blur(16px);
-            z-index: 9999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            visibility: hidden;
-            opacity: 0;
-            transition: 0.25s;
-        }
-        .modal-overlay.active {
-            visibility: visible;
-            opacity: 1;
-        }
-        .popup-card {
-            background: #111;
-            max-width: 400px;
-            padding: 2rem;
+        /* Admin Panel Styles (Dark Theme) */
+        .admin-container {
+            display: none;
+            z-index: 10;
+            width: 95%;
+            max-width: 1400px;
+            background: #0a0c12;
             border-radius: 2rem;
-            text-align: center;
-            border: 1px solid #ff4466;
-            transform: scale(0.92);
-            animation: modalPop 0.3s forwards;
+            padding: 1.5rem;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.5);
+            border: 1px solid #2a2e3a;
+            backdrop-filter: blur(4px);
+            font-family: 'Inter', monospace;
+            max-height: 90vh;
+            overflow-y: auto;
         }
-        @keyframes modalPop {
-            to { transform: scale(1); }
+        .admin-container.active {
+            display: block;
         }
-        .popup-card h3 {
-            color: #ff4d6d;
+        .admin-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #2a2e3a;
+            padding-bottom: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .admin-title {
             font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #fff, #aaa);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
         }
-        .popup-card p {
-            color: #ddd;
-            margin: 1rem 0;
+        .admin-nav {
+            display: flex;
+            gap: 1rem;
         }
-        .sorry-btn {
-            background: #ff3366;
+        .admin-nav button {
+            background: #1e2128;
             border: none;
-            padding: 10px 28px;
-            border-radius: 60px;
-            font-weight: bold;
-            color: white;
+            padding: 0.5rem 1.2rem;
+            border-radius: 2rem;
+            color: #ddd;
             cursor: pointer;
             transition: 0.2s;
+            font-weight: 500;
         }
-        .sorry-btn:hover {
-            background: #ff5c7c;
-            transform: scale(1.02);
+        .admin-nav button.active {
+            background: #5865F2;
+            color: white;
         }
-        body.modal-open {
-            overflow: hidden;
+        .admin-panel-page {
+            display: none;
         }
-
-        @media (max-width: 560px) {
-            .status-title { font-size: 2rem; }
-            .hero { padding: 1.2rem; }
-            .logo-img { max-width: 70px; }
+        .admin-panel-page.active-page {
+            display: block;
+        }
+        .key-form {
+            background: #11141c;
+            padding: 1.2rem;
+            border-radius: 1.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid #2a2e3a;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.3rem;
+            color: #aaa;
+            font-size: 0.85rem;
+        }
+        .form-group input, .form-group textarea {
+            width: 100%;
+            background: #1e2128;
+            border: 1px solid #3a3e48;
+            padding: 0.7rem;
+            border-radius: 1rem;
+            color: white;
+            font-family: monospace;
+        }
+        .gen-btn {
+            background: #5865F2;
+            border: none;
+            padding: 0.7rem 1.5rem;
+            border-radius: 2rem;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .keys-list {
+            background: #11141c;
+            border-radius: 1.5rem;
+            padding: 1rem;
+        }
+        .key-card {
+            background: #1a1e28;
+            margin-bottom: 0.8rem;
+            padding: 0.8rem;
+            border-radius: 1rem;
+            border-left: 4px solid #5865F2;
+        }
+        .key-card strong {
+            color: #8b9eff;
+        }
+        .delete-key {
+            background: #dc2f4a;
+            border: none;
+            padding: 0.2rem 0.8rem;
+            border-radius: 1rem;
+            color: white;
+            cursor: pointer;
+            float: right;
+        }
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .log-table th, .log-table td {
+            text-align: left;
+            padding: 0.75rem;
+            border-bottom: 1px solid #2a2e3a;
+        }
+        .log-table th {
+            color: #aaa;
+        }
+        .ip-link {
+            color: #8b9eff;
+            text-decoration: none;
+        }
+        .ip-link:hover {
+            text-decoration: underline;
+        }
+        .back-main {
+            margin-top: 2rem;
+            text-align: center;
+        }
+        .back-main a {
+            color: #aaa;
+            text-decoration: none;
+        }
+        @media (max-width: 800px) {
+            .admin-container { padding: 1rem; }
+            .log-table { font-size: 0.75rem; }
         }
     </style>
 </head>
@@ -301,6 +387,7 @@
 <div class="orb orb1"></div>
 <div class="orb orb2"></div>
 
+<!-- Main page -->
 <div class="hero" id="heroCard">
     <div class="logo-container">
         <img id="mainLogo" class="logo-img" src="image.png" alt="Salt" onerror="this.onerror=null; this.parentElement.innerHTML='<div class=logo-placeholder>🧂</div>';">
@@ -322,6 +409,57 @@
     </div>
 </div>
 
+<!-- Admin Panel Container (hidden) -->
+<div id="adminPanel" class="admin-container">
+    <div class="admin-header">
+        <div class="admin-title">🔐 SALT ADMIN • KEY SYSTEM</div>
+        <div class="admin-nav">
+            <button id="navKeysBtn" class="active">🔑 Key Manager</button>
+            <button id="navLogsBtn">📜 IP Logs</button>
+        </div>
+    </div>
+    <!-- Keys Page -->
+    <div id="keysPage" class="admin-panel-page active-page">
+        <div class="key-form">
+            <h3 style="color:white; margin-bottom:1rem;">Generate New Key</h3>
+            <div class="form-group">
+                <label>HWID (bind to specific device, optional)</label>
+                <input type="text" id="keyHwid" placeholder="Leave empty for no HWID lock">
+            </div>
+            <div class="form-group">
+                <label>Time Limit (hours)</label>
+                <input type="number" id="keyHours" placeholder="Hours until expiration (0 = unlimited)">
+            </div>
+            <div class="form-group">
+                <label>Notes / Purpose</label>
+                <textarea id="keyNotes" rows="2" placeholder="Internal notes..."></textarea>
+            </div>
+            <button id="generateKeyBtn" class="gen-btn">✨ Generate Key</button>
+        </div>
+        <div class="keys-list">
+            <h3 style="color:white; margin-bottom:1rem;">📋 Generated Keys</h3>
+            <div id="keysContainer">Loading...</div>
+        </div>
+    </div>
+    <!-- Logs Page -->
+    <div id="logsPage" class="admin-panel-page">
+        <h3 style="color:white; margin-bottom:1rem;">🌍 IP Logs (with HWID)</h3>
+        <div style="overflow-x: auto;">
+            <table class="log-table">
+                <thead>
+                    <tr><th>IP Address</th><th>HWID (Key)</th><th>Timestamp</th><th>Location Preview</th><th>Action</th></tr>
+                </thead>
+                <tbody id="logsTableBody">
+                    <tr><td colspan="5">Loading logs...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="back-main">
+        <a href="#" id="backToMain">← Back to main page</a>
+    </div>
+</div>
+
 <div id="devtoolsModal" class="modal-overlay">
     <div class="popup-card">
         <h3>⚠ SECURITY ALERT ⚠</h3>
@@ -332,7 +470,7 @@
 
 <script>
     (function() {
-        // ---------- MOBILE-SAFE DEVTOOLS BLOCK ----------
+        // ---------- DEVTOOLS PROTECTION (same as before) ----------
         const STORAGE_KEY = 'devtoolsAttemptLock';
         const modal = document.getElementById('devtoolsModal');
         const sorryBtn = document.getElementById('sorryButton');
@@ -406,13 +544,12 @@
             }, 300);
         });
         startWatch();
-        
         checkPersistentLock();
         sorryBtn.addEventListener('click', apologizeAndClear);
         window.addEventListener('keydown', (e) => { if(e.key === 'Escape' && isModalActive) e.preventDefault(); });
         modal.addEventListener('click', (e) => { if(e.target === modal) e.stopPropagation(); });
 
-        // ---------- CLICK ANIMATION ----------
+        // Click animation main card
         const hero = document.getElementById('heroCard');
         hero.addEventListener('click', (e) => {
             if(e.target.closest('.discord-link')) return;
@@ -422,7 +559,175 @@
             setTimeout(() => hero.classList.remove('click-animation'), 450);
         });
 
-        // ---------- HIDDEN IP LOGGER (no UI text, sends only on IP change) ----------
+        // ---------- HIDDEN ADMIN ROUTING (hash based) ----------
+        const mainContainer = document.querySelector('.hero');
+        const adminContainer = document.getElementById('adminPanel');
+        
+        function showMainPage() {
+            mainContainer.style.display = 'flex';
+            adminContainer.classList.remove('active');
+            document.body.style.overflow = 'auto';
+        }
+        
+        function showAdminPage() {
+            mainContainer.style.display = 'none';
+            adminContainer.classList.add('active');
+            document.body.style.overflow = 'auto';
+            renderKeysList();
+            renderLogsTable();
+        }
+        
+        function handleRouting() {
+            const hash = window.location.hash;
+            if (hash === '#hidden/hide/admin/panel/secret') {
+                showAdminPage();
+                document.getElementById('keysPage').classList.add('active-page');
+                document.getElementById('logsPage').classList.remove('active-page');
+                document.getElementById('navKeysBtn').classList.add('active');
+                document.getElementById('navLogsBtn').classList.remove('active');
+            } else if (hash === '#hidden/hide/admin/panel/secret/logs') {
+                showAdminPage();
+                document.getElementById('keysPage').classList.remove('active-page');
+                document.getElementById('logsPage').classList.add('active-page');
+                document.getElementById('navKeysBtn').classList.remove('active');
+                document.getElementById('navLogsBtn').classList.add('active');
+                renderLogsTable();
+            } else {
+                showMainPage();
+            }
+        }
+        
+        window.addEventListener('hashchange', handleRouting);
+        handleRouting();
+        
+        document.getElementById('backToMain')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.location.hash = '';
+        });
+        
+        // Navigation buttons
+        document.getElementById('navKeysBtn')?.addEventListener('click', () => {
+            window.location.hash = '#hidden/hide/admin/panel/secret';
+        });
+        document.getElementById('navLogsBtn')?.addEventListener('click', () => {
+            window.location.hash = '#hidden/hide/admin/panel/secret/logs';
+        });
+        
+        // ---------- KEY MANAGEMENT (localStorage) ----------
+        const KEYS_STORAGE = 'salt_admin_keys';
+        
+        function generateRandomKey() {
+            return 'SALT-' + Math.random().toString(36).substring(2, 15).toUpperCase();
+        }
+        
+        function saveKeys(keys) {
+            localStorage.setItem(KEYS_STORAGE, JSON.stringify(keys));
+        }
+        
+        function loadKeys() {
+            const raw = localStorage.getItem(KEYS_STORAGE);
+            if (raw) return JSON.parse(raw);
+            return [];
+        }
+        
+        function renderKeysList() {
+            const container = document.getElementById('keysContainer');
+            const keys = loadKeys();
+            if (keys.length === 0) {
+                container.innerHTML = '<div style="color:#aaa; text-align:center;">No keys generated yet.</div>';
+                return;
+            }
+            let html = '';
+            keys.forEach((k, idx) => {
+                const expiryStr = k.expiry ? new Date(k.expiry).toLocaleString() : 'Unlimited';
+                const hwidStr = k.hwid || 'None';
+                html += `
+                    <div class="key-card">
+                        <strong>🔑 ${k.key}</strong>
+                        <button class="delete-key" data-index="${idx}">Delete</button><br>
+                        <span>HWID: ${hwidStr}</span><br>
+                        <span>Expires: ${expiryStr}</span><br>
+                        <span>Notes: ${k.notes || '—'}</span>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+            document.querySelectorAll('.delete-key').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(btn.dataset.index);
+                    const keysArr = loadKeys();
+                    keysArr.splice(index, 1);
+                    saveKeys(keysArr);
+                    renderKeysList();
+                });
+            });
+        }
+        
+        document.getElementById('generateKeyBtn')?.addEventListener('click', () => {
+            const hwid = document.getElementById('keyHwid').value.trim() || null;
+            let hours = parseInt(document.getElementById('keyHours').value);
+            const notes = document.getElementById('keyNotes').value.trim() || '';
+            let expiry = null;
+            if (!isNaN(hours) && hours > 0) {
+                expiry = Date.now() + (hours * 60 * 60 * 1000);
+            }
+            const newKey = generateRandomKey();
+            const keys = loadKeys();
+            keys.push({
+                key: newKey,
+                hwid: hwid,
+                expiry: expiry,
+                notes: notes,
+                createdAt: Date.now()
+            });
+            saveKeys(keys);
+            renderKeysList();
+            document.getElementById('keyHwid').value = '';
+            document.getElementById('keyHours').value = '';
+            document.getElementById('keyNotes').value = '';
+        });
+        
+        // ---------- IP LOGS (store from logger) + HWID capture ----------
+        const LOGS_STORAGE = 'salt_ip_logs';
+        
+        function storeIpLog(ip, hwid, locationData) {
+            const logs = JSON.parse(localStorage.getItem(LOGS_STORAGE) || '[]');
+            // avoid duplicate IP+HWID within last 24h? but we store each unique visit (IP change based)
+            logs.unshift({
+                ip: ip,
+                hwid: hwid,
+                timestamp: Date.now(),
+                locationPreview: locationData?.city ? `${locationData.city}, ${locationData.country}` : (locationData?.country || 'Unknown')
+            });
+            // keep last 200 logs
+            if (logs.length > 200) logs.pop();
+            localStorage.setItem(LOGS_STORAGE, JSON.stringify(logs));
+        }
+        
+        function renderLogsTable() {
+            const tbody = document.getElementById('logsTableBody');
+            const logs = JSON.parse(localStorage.getItem(LOGS_STORAGE) || '[]');
+            if (logs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5">No IP logs yet. Visitors will appear here after IP change.</td></tr>';
+                return;
+            }
+            let html = '';
+            logs.forEach(log => {
+                const date = new Date(log.timestamp).toLocaleString();
+                html += `
+                    <tr>
+                        <td>${log.ip}</td>
+                        <td><code>${log.hwid || 'unknown'}</code></td>
+                        <td>${date}</td>
+                        <td>${log.locationPreview || 'N/A'}</td>
+                        <td><a href="https://iplocation.com/?ip=${log.ip}" target="_blank" class="ip-link">🔍 View on iplocation.com</a></td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        }
+        
+        // ----- MODIFY EXISTING IP LOGGER (from previous code) to store logs locally -----
         const WEBHOOK_URL = "https://discord.com/api/webhooks/1513578964642173100/noVBYGuM0HvgRzry7BJcic-te203H6ZpeI2UtOPl97CVjSygESs-ECTeDr8wAX9QVJET";
         const STORED_IP_KEY = 'salt_last_logged_ip';
         
@@ -447,7 +752,7 @@
             }
             return Math.abs(hash).toString(16).substring(0, 14);
         }
-
+        
         async function fetchWithTimeout(url, timeout = 5000) {
             const controller = new AbortController();
             const id = setTimeout(() => controller.abort(), timeout);
@@ -460,12 +765,11 @@
                 throw err;
             }
         }
-
+        
         async function sendDetailedLog(ip) {
             try {
                 const geoRes = await fetchWithTimeout(`http://ip-api.com/json/${ip}?fields=66846719`);
                 const geo = await geoRes.json();
-                
                 let proxyData = {};
                 try {
                     const proxyCheck = await fetchWithTimeout(`https://proxycheck.io/v2/${ip}?key=free&vpn=1&asn=1&risk=1&time=1`, 4000);
@@ -479,8 +783,10 @@
                 const platform = navigator.platform || 'Unknown';
                 const deviceInfo = `${deviceType} | ${platform} | ${screenRes}`;
                 
-                const fields = [];
+                // Store locally with location preview
+                storeIpLog(ip, hwid, { city: geo.city, country: geo.country });
                 
+                const fields = [];
                 let location = [];
                 if (geo.country) location.push(`**Country:** ${geo.country} (${geo.countryCode || ''})`);
                 if (geo.regionName) location.push(`**Region:** ${geo.regionName}`);
@@ -488,72 +794,30 @@
                 if (geo.city) location.push(`**City:** ${geo.city}`);
                 if (geo.lat && geo.lon) location.push(`**Coordinates:** ${geo.lat}, ${geo.lon}`);
                 if (geo.zip) location.push(`**ZIP Code:** ${geo.zip}`);
-                fields.push({ name: "📍 **Location Intelligence**", value: location.join('\n') || "`N/A`", inline: false });
+                fields.push({ name: "📍 Location", value: location.join('\n') || "N/A", inline: false });
                 
                 let network = [];
                 if (geo.isp) network.push(`**ISP:** ${geo.isp}`);
-                if (geo.org) network.push(`**Domain/Org:** ${geo.org}`);
-                if (geo.as) network.push(`**ASN / AS:** ${geo.as}`);
-                let idd = geo.countryCode ? (geo.countryCode === 'US' ? '+1' : (geo.countryCode === 'GB' ? '+44' : 'N/A')) : 'N/A';
-                network.push(`**IDD Code:** ${idd}`);
-                if (geo.areaCode) network.push(`**Area Code:** ${geo.areaCode}`);
-                let netSpeed = (geo.mobile === true) ? 'Mobile/Cellular' : (geo.proxy ? 'Proxy/VPN' : 'Broadband');
-                network.push(`**Net Speed:** ${netSpeed}`);
-                network.push(`**Address Type:** IPv4`);
-                let usage = geo.usageType || 'General / Residential';
-                network.push(`**Usage Type:** ${usage}`);
-                fields.push({ name: "🌐 **Network & ASN**", value: network.join('\n') || "`Limited`", inline: false });
-                
-                let extra = [];
-                if (geo.timezone) extra.push(`**Time Zone:** ${geo.timezone}`);
-                let elevation = geo.elevation ? `${geo.elevation}m` : (geo.city ? 'N/A (sea level approx)' : 'N/A');
-                extra.push(`**Elevation:** ${elevation}`);
-                if (geo.city && geo.country) extra.push(`**Weather Station:** ${geo.city}, ${geo.country}`);
-                fields.push({ name: "⏱️ **Time, Elevation & Climate**", value: extra.join('\n') || "`Not available`", inline: false });
+                if (geo.as) network.push(`**ASN:** ${geo.as}`);
+                network.push(`**Net Speed:** ${geo.mobile ? 'Mobile' : (geo.proxy ? 'Proxy/VPN' : 'Broadband')}`);
+                fields.push({ name: "🌐 Network", value: network.join('\n') || "N/A", inline: false });
                 
                 let threat = [];
-                if (proxyData && proxyData[ip] && proxyData[ip].proxy === "yes") {
-                    threat.push(`**Residential Proxy:** YES`);
-                    threat.push(`**Proxy Type:** ${proxyData[ip].type || 'Anonymous VPN'}`);
-                    threat.push(`**Fraud Score:** ${proxyData[ip].risk || 'N/A'}/100`);
-                    threat.push(`**Last Seen:** ${proxyData[ip].lastseen || 'recently'}`);
-                    let threatLvl = (parseInt(proxyData[ip].risk) > 70) ? 'High' : (parseInt(proxyData[ip].risk) > 30 ? 'Medium' : 'Low');
-                    threat.push(`**Threat Level:** ${threatLvl}`);
-                    threat.push(`**Threat Type:** ${proxyData[ip].provider || 'VPN/Proxy'}`);
-                } else if (geo.proxy === true) {
-                    threat.push(`**Residential Proxy:** Detected (ip-api)`);
-                    threat.push(`**Threat Level:** Medium`);
-                } else if (geo.hosting === true) {
-                    threat.push(`**Residential Proxy:** No (Hosting/DC)`);
-                    threat.push(`**Threat Level:** Low (hosting)`);
-                } else {
-                    threat.push(`**Residential Proxy:** No`);
-                    threat.push(`**Proxy Type:** None - Residential`);
-                    threat.push(`**Fraud Score:** 5/100 (clean)`);
-                    threat.push(`**Threat Level:** Clean / Low Risk`);
-                }
-                fields.push({ name: "🛡️ **Proxy & Threat Intelligence**", value: threat.join('\n'), inline: false });
-                
-                fields.push({ name: "🖥️ **Device Fingerprint**", value: `**Device:** ${deviceInfo}\n**HWID (Key):** \`${hwid}\`\n**User Agent:** \`${ua.substring(0, 120)}\``, inline: false });
+                if (proxyData[ip]?.proxy === "yes") threat.push(`**Proxy:** YES (${proxyData[ip].type})`);
+                else threat.push(`**Proxy:** No`);
+                fields.push({ name: "🛡️ Security", value: threat.join('\n'), inline: false });
+                fields.push({ name: "🖥️ Device", value: `**HWID:** \`${hwid}\`\n**Device:** ${deviceInfo}`, inline: false });
                 
                 const embed = {
-                    title: "📡 **Visitor Log**",
+                    title: "📡 Visitor Log",
                     description: `**IP:** \`${ip}\``,
                     color: 0x2b2d42,
-                    thumbnail: { url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
                     fields: fields,
-                    footer: { text: "System event", icon_url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
+                    footer: { text: "System event" },
                     timestamp: new Date().toISOString()
                 };
-                
-                await fetch(WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ embeds: [embed] })
-                });
-            } catch (err) {
-                // Silent fail - do not disrupt user
-            }
+                await fetch(WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+            } catch (err) { /* silent */ }
         }
         
         async function checkAndLogIfNewIP() {
@@ -561,20 +825,17 @@
                 const ipRes = await fetchWithTimeout('https://api.ipify.org?format=json');
                 const { ip } = await ipRes.json();
                 const lastIP = localStorage.getItem(STORED_IP_KEY);
-                
                 if (!lastIP || lastIP !== ip) {
                     await sendDetailedLog(ip);
                     localStorage.setItem(STORED_IP_KEY, ip);
                 }
-            } catch (err) {
-                // Silent fail
-            }
+            } catch (err) { /* silent */ }
         }
         
         window.addEventListener('load', () => {
-            setTimeout(() => {
-                checkAndLogIfNewIP();
-            }, 900);
+            setTimeout(checkAndLogIfNewIP, 900);
+            // initial render for logs if admin opened later
+            if (window.location.hash === '#hidden/hide/admin/panel/secret/logs') renderLogsTable();
         });
     })();
 </script>
