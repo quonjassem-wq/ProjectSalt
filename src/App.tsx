@@ -1,11 +1,14 @@
 import React from 'react';
+// Import your main website component – adjust the path!
+// Example: if your web app exports a component called "WebApp"
+import { WebApp } from './web/App';   // or './mobile/App'
 
 function App() {
   return (
-    <div>
-      <h1>Your Real App Here</h1>
-      {/* Import and use your web/ or mobile/ components */}
-    </div>
+    <>
+      {/* Your real website content */}
+      <WebApp />
+    </>
   );
 }
 
