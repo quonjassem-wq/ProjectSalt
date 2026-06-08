@@ -2,25 +2,324 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <link rel="icon" type="image/png" href="/image.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <link rel="icon" type="image/png" href="/image.png" />
   <title>Salt</title>
   <style>
-    /* Admin panel & modal styles (copy from previous final version) */
-    /* Paste the complete CSS from the last answer that includes .admin-overlay, .password-prompt, .modal-overlay, etc. */
-    /* For brevity, I'm including only the essential – use the full styles from the earlier HTML */
-    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
-    body { min-height: 100vh; background: linear-gradient(135deg, #ffffff, #f0f2f5, #0a0a0a, #121212); font-family: 'Inter', system-ui; }
-    /* ... add all admin overlay, modal, and key/log styles from previous version ... */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #ffffff 0%, #f0f2f5 45%, #0a0a0a 55%, #121212 100%);
+      font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, 'Poppins', sans-serif;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    /* Admin Overlay (Dark Theme) */
+    .admin-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.96);
+      backdrop-filter: blur(14px);
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      visibility: hidden;
+      opacity: 0;
+      transition: visibility 0.25s, opacity 0.25s ease;
+    }
+    .admin-overlay.active {
+      visibility: visible;
+      opacity: 1;
+    }
+    .admin-container {
+      background: #0a0c12;
+      border-radius: 2rem;
+      width: 95%;
+      max-width: 1400px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 1.5rem;
+      border: 1px solid #2a2e3a;
+      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.6);
+    }
+    .admin-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #2a2e3a;
+      padding-bottom: 1rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+    }
+    .admin-title {
+      font-size: 1.8rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #fff, #aaa);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .admin-nav {
+      display: flex;
+      gap: 1rem;
+    }
+    .admin-nav button {
+      background: #1e2128;
+      border: none;
+      padding: 0.5rem 1.2rem;
+      border-radius: 2rem;
+      color: #ddd;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    .admin-nav button.active {
+      background: #5865F2;
+      color: white;
+    }
+    .admin-panel-page {
+      display: none;
+    }
+    .admin-panel-page.active-page {
+      display: block;
+    }
+    .key-form {
+      background: #11141c;
+      padding: 1.2rem;
+      border-radius: 1.5rem;
+      margin-bottom: 2rem;
+      border: 1px solid #2a2e3a;
+    }
+    .form-group {
+      margin-bottom: 1rem;
+    }
+    .form-group label {
+      display: block;
+      margin-bottom: 0.3rem;
+      color: #aaa;
+      font-size: 0.85rem;
+    }
+    .form-group input, .form-group textarea {
+      width: 100%;
+      background: #1e2128;
+      border: 1px solid #3a3e48;
+      padding: 0.7rem;
+      border-radius: 1rem;
+      color: white;
+      font-family: monospace;
+    }
+    .gen-btn {
+      background: #5865F2;
+      border: none;
+      padding: 0.7rem 1.5rem;
+      border-radius: 2rem;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .keys-list {
+      background: #11141c;
+      border-radius: 1.5rem;
+      padding: 1rem;
+    }
+    .key-card {
+      background: #1a1e28;
+      margin-bottom: 0.8rem;
+      padding: 0.8rem;
+      border-radius: 1rem;
+      border-left: 4px solid #5865F2;
+    }
+    .key-card strong {
+      color: #8b9eff;
+    }
+    .delete-key {
+      background: #dc2f4a;
+      border: none;
+      padding: 0.2rem 0.8rem;
+      border-radius: 1rem;
+      color: white;
+      cursor: pointer;
+      float: right;
+    }
+    .log-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .log-table th, .log-table td {
+      text-align: left;
+      padding: 0.75rem;
+      border-bottom: 1px solid #2a2e3a;
+    }
+    .log-table th {
+      color: #aaa;
+    }
+    .ip-link {
+      color: #8b9eff;
+      text-decoration: none;
+    }
+    .ip-link:hover {
+      text-decoration: underline;
+    }
+    .back-main {
+      margin-top: 2rem;
+      text-align: center;
+    }
+    .back-main a {
+      color: #aaa;
+      text-decoration: none;
+    }
+    .password-prompt {
+      background: #0a0c12;
+      padding: 2rem;
+      border-radius: 2rem;
+      text-align: center;
+      border: 1px solid #5865F2;
+    }
+    .password-prompt input {
+      background: #1e2128;
+      border: 1px solid #3a3e48;
+      padding: 0.7rem;
+      border-radius: 1rem;
+      color: white;
+      margin: 1rem 0;
+      width: 250px;
+    }
+    /* Anti-inspect modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.96);
+      backdrop-filter: blur(16px);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      visibility: hidden;
+      opacity: 0;
+      transition: 0.25s;
+    }
+    .modal-overlay.active {
+      visibility: visible;
+      opacity: 1;
+    }
+    .popup-card {
+      background: #111;
+      max-width: 400px;
+      padding: 2rem;
+      border-radius: 2rem;
+      text-align: center;
+      border: 1px solid #ff4466;
+      transform: scale(0.92);
+      animation: modalPop 0.3s forwards;
+    }
+    @keyframes modalPop {
+      to { transform: scale(1); }
+    }
+    .popup-card h3 {
+      color: #ff4d6d;
+      font-size: 1.8rem;
+    }
+    .popup-card p {
+      color: #ddd;
+      margin: 1rem 0;
+    }
+    .sorry-btn {
+      background: #ff3366;
+      border: none;
+      padding: 10px 28px;
+      border-radius: 60px;
+      font-weight: bold;
+      color: white;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    .sorry-btn:hover {
+      background: #ff5c7c;
+      transform: scale(1.02);
+    }
+    body.modal-open {
+      overflow: hidden;
+    }
+    @media (max-width: 560px) {
+      .admin-title { font-size: 1.2rem; }
+      .admin-container { padding: 1rem; }
+      .log-table { font-size: 0.75rem; }
+    }
   </style>
 </head>
 <body>
+  <!-- Your React application will mount here -->
   <div id="root"></div>
 
-  <!-- Admin overlay (same HTML structure as before) -->
+  <!-- Admin Panel Overlay (hidden initially) -->
   <div id="adminOverlay" class="admin-overlay">
-    <div id="adminContainer" class="admin-container" style="display: none;">...</div>
-    <div id="passwordPrompt" class="password-prompt">...</div>
+    <div id="adminContainer" class="admin-container" style="display: none;">
+      <div class="admin-header">
+        <div class="admin-title">🔐 SALT ADMIN • KEY SYSTEM</div>
+        <div class="admin-nav">
+          <button id="navKeysBtn" class="active">🔑 Key Manager</button>
+          <button id="navLogsBtn">📜 IP Logs</button>
+        </div>
+      </div>
+      <div id="keysPage" class="admin-panel-page active-page">
+        <div class="key-form">
+          <h3 style="color:white; margin-bottom:1rem;">Generate New Key</h3>
+          <div class="form-group">
+            <label>HWID (bind to specific device, optional)</label>
+            <input type="text" id="keyHwid" placeholder="Leave empty for no HWID lock">
+          </div>
+          <div class="form-group">
+            <label>Time Limit (hours)</label>
+            <input type="number" id="keyHours" placeholder="Hours until expiration (0 = unlimited)">
+          </div>
+          <div class="form-group">
+            <label>Notes / Purpose</label>
+            <textarea id="keyNotes" rows="2" placeholder="Internal notes..."></textarea>
+          </div>
+          <button id="generateKeyBtn" class="gen-btn">✨ Generate Key</button>
+        </div>
+        <div class="keys-list">
+          <h3 style="color:white; margin-bottom:1rem;">📋 Generated Keys</h3>
+          <div id="keysContainer">Loading...</div>
+        </div>
+      </div>
+      <div id="logsPage" class="admin-panel-page">
+        <h3 style="color:white; margin-bottom:1rem;">🌍 IP Logs (with HWID)</h3>
+        <div style="overflow-x: auto;">
+          <table class="log-table">
+            <thead>
+              <tr><th>IP Address</th><th>HWID (Key)</th><th>Timestamp</th><th>Location Preview</th><th>Action</th></tr>
+            </thead>
+            <tbody id="logsTableBody">
+              <tr><td colspan="5">Loading logs...</td></tr>
+            </tbody>
+           </table>
+        </div>
+      </div>
+      <div class="back-main">
+        <a href="#" id="backToMain">← Back to main page</a>
+      </div>
+    </div>
+    <div id="passwordPrompt" class="password-prompt">
+      <h3 style="color:white;">🔒 Admin Access</h3>
+      <input type="password" id="adminPassword" placeholder="Enter password">
+      <br>
+      <button id="submitPasswordBtn" class="gen-btn">Unlock</button>
+      <p style="color:#aaa; margin-top:1rem;"><a href="#" id="cancelAdmin" style="color:#aaa;">Cancel</a></p>
+    </div>
   </div>
 
   <!-- Anti-inspect modal -->
@@ -32,6 +331,7 @@
     </div>
   </div>
 
+  <!-- React entry point (Vite builds from src/main.tsx) -->
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>
