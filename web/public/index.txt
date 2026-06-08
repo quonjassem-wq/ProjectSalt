@@ -1,0 +1,1267 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+//  IMPORTS & SETUP
+// ═══════════════════════════════════════════════════════════════════════════════
+require('dotenv').config();
+const { Client, GatewayIntentBits, REST, Routes, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ChannelType, PermissionFlagsBits } = require('discord.js');
+const { joinVoiceChannel } = require('@discordjs/voice');
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const cheerio = require('cheerio');
+
+// Polyfill for global File (for undici on Node 18)
+if (typeof globalThis.File === 'undefined') {
+  const { File } = require('buffer');
+  globalThis.File = File;
+}
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+
+const SALT_VOICE_ID = process.env.SALT_VOICE_ID;
+const ROBLOX_CHAN_ID = process.env.ROBLOX_CHAN_ID;
+const ROBLOX_SITES = (process.env.ROBLOX_SITES || 'https://whatexpsare.online,https://weao.xyz').split(',');
+
+// Economy constants
+const DAILY_CD = 86400000;
+const WORK_CD = 3600000;
+const CRIME_CD = 300000;
+const ROB_CD = 600000;
+const WORK_LINES = ['worked as a developer', 'did some freelance coding', 'completed a bounty', 'sold a script', 'won a tournament'];
+const CRIME_LIST = [
+  { m: 'Hacked a bank', min: 200, max: 800 },
+  { m: 'Pickpocketed a tourist', min: 50, max: 250 },
+  { m: 'Sold counterfeit items', min: 100, max: 500 },
+  { m: 'Robbed a convenience store', min: 150, max: 600 }
+];
+const CRIME_FAIL = ['Got caught and paid a fine of', 'Police fined you', 'You slipped and paid', 'An informant cost you'];
+const SHOP = {
+  fishingrod: { name: '🎣 Fishing Rod', price: 500, desc: 'Allows you to fish' },
+  rifle: { name: '🔫 Hunting Rifle', price: 1200, desc: 'Allows you to hunt' },
+  pickaxe: { name: '⛏️ Pickaxe', price: 800, desc: 'Allows you to mine' },
+  laptop: { name: '💻 Laptop', price: 2000, desc: 'Reduces crime fail rate & increases reward' },
+  shield: { name: '🛡️ Shield', price: 1500, desc: 'Reduces stolen amount when robbed' }
+};
+const FISH = [
+  { n: '🐟 Salmon', v: 30 }, { n: '🐠 Clownfish', v: 50 }, { n: '🐡 Blowfish', v: 70 }, { n: '🐙 Octopus', v: 90 }, { n: '🦑 Squid', v: 110 }, { n: '🐋 Whale', v: 500 }
+];
+const HUNT = [
+  { n: '🐇 Rabbit', v: 40 }, { n: '🦊 Fox', v: 80 }, { n: '🐗 Boar', v: 120 }, { n: '🦌 Deer', v: 200 }, { n: '🐻 Bear', v: 400 }
+];
+const MINE = [
+  { n: '🪨 Stone', v: 20 }, { n: '⚒️ Coal', v: 40 }, { n: '🔩 Iron', v: 80 }, { n: '💎 Emerald', v: 200 }, { n: '✨ Diamond', v: 500 }
+];
+
+// ─── HELPER FUNCTIONS (DB, etc.) ──────────────────────────────────────────────
+function readDB(name) {
+  const p = path.join(DATA_DIR, `${name}.json`);
+  if (!fs.existsSync(p)) return {};
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return {}; }
+}
+function writeDB(name, data) {
+  fs.writeFileSync(path.join(DATA_DIR, `${name}.json`), JSON.stringify(data, null, 2));
+}
+
+function getEcon(userId) {
+  const db = readDB('economy');
+  if (!db[userId]) db[userId] = { coins: 500, bank: 0, lastDaily: 0, lastWork: 0, lastCrime: 0, lastRob: 0, streak: 0, inventory: {} };
+  return db[userId];
+}
+function setEcon(userId, data) { const db = readDB('economy'); db[userId] = data; writeDB('economy', db); }
+function addCoins(userId, amount) { const e = getEcon(userId); e.coins += amount; if (e.coins < 0) e.coins = 0; setEcon(userId, e); }
+function fmtC(coins) { return `${coins.toLocaleString()} 🪙`; }
+function cdFmt(ms) { const s = Math.floor(ms / 1000); const m = Math.floor(s / 60); const h = Math.floor(m / 60); if (h) return `${h}h ${m % 60}m`; if (m) return `${m}m ${s % 60}s`; return `${s}s`; }
+function wPick(arr) { const total = arr.reduce((s, i) => s + i.v, 0); let r = Math.random() * total; for (const i of arr) { r -= i.v; if (r <= 0) return i; } return arr[0]; }
+function genKey() { return 'SALT-' + Math.random().toString(36).substring(2, 10).toUpperCase(); }
+function parseDur(dur) { const m = dur.match(/^(\d+)(s|m|h|d)$/i); if (!m) throw new Error('Invalid duration. Use e.g. 30m, 2h, 7d'); const ms = parseInt(m[1]) * (m[2] === 's' ? 1000 : m[2] === 'm' ? 60000 : m[2] === 'h' ? 3600000 : 86400000); return new Date(Date.now() + ms); }
+function parseTimeToMs(time) { const m = time.match(/^(\d+)(s|m|h|d|w)$/i); if (!m) throw new Error('Invalid time format'); let mult = 1; if (m[2] === 'w') mult = 7; const ms = parseInt(m[1]) * (m[2] === 's' ? 1000 : m[2] === 'm' ? 60000 : m[2] === 'h' ? 3600000 : 86400000) * (mult === 7 ? 7 : 1); return ms; }
+function fmtExp(exp) { return exp ? `<t:${Math.floor(new Date(exp).getTime() / 1000)}:R>` : 'Never'; }
+function keyExp(k) { return k.expiresAt && new Date(k.expiresAt) < new Date(); }
+function parseGwDur(dur) { const m = dur.match(/^(\d+)(s|m|h|d)$/i); if (!m) throw new Error('Invalid duration'); return parseInt(m[1]) * (m[2] === 's' ? 1000 : m[2] === 'm' ? 60000 : m[2] === 'h' ? 3600000 : 86400000); }
+function pickWinners(entries, count) { const shuffled = [...entries]; for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; } return shuffled.slice(0, count); }
+function spinReel() { const reels = [{ e: '🍒', v: 1 }, { e: '🍋', v: 2 }, { e: '🍊', v: 3 }, { e: '🔔', v: 4 }, { e: '💎', v: 10 }]; return reels[Math.floor(Math.random() * reels.length)]; }
+function calcSlots(a, b, c, bet) { if (a.e === b.e && b.e === c.e) { const mult = a.v === 10 ? 50 : a.v === 4 ? 10 : a.v === 3 ? 5 : 2; return { won: true, payout: bet * mult, msg: `JACKPOT! ${a.e} x3!` }; } else if (a.e === b.e || b.e === c.e || a.e === c.e) { return { won: true, payout: bet * 2, msg: `Pair of ${a.e === b.e ? a.e : c.e}!` }; } else { return { won: false, payout: 0, msg: 'You lost...' }; } }
+function resolveRoulette(choice, num, bet) { const color = (num === 0) ? 'green' : (num % 2 === 0 ? 'black' : 'red'); let won = false, mult = 0; if (choice === 'red' && color === 'red') { won = true; mult = 2; } else if (choice === 'black' && color === 'black') { won = true; mult = 2; } else if (choice === 'even' && num !== 0 && num % 2 === 0) { won = true; mult = 2; } else if (choice === 'odd' && num % 2 === 1) { won = true; mult = 2; } else if (choice === `num_${num}`) { won = true; mult = 36; } return { won, payout: won ? bet * mult : 0, color, num }; }
+function buildDeck() { const suits = ['♠', '♥', '♣', '♦']; const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']; const deck = []; for (const s of suits) for (const v of values) deck.push({ v, s, val: v === 'A' ? 11 : ['K', 'Q', 'J'].includes(v) ? 10 : parseInt(v) }); for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; } return deck; }
+function hval(hand) { let sum = hand.reduce((a, c) => a + c.val, 0); let aces = hand.filter(c => c.v === 'A').length; while (sum > 21 && aces > 0) { sum -= 10; aces--; } return sum; }
+function bjEmbed(game, state = 'playing') { const pv = hval(game.player), dv = hval(game.dealer); let desc = `**Your hand:** ${game.player.map(c => `${c.v}${c.s}`).join(' ')} = ${pv}\n**Dealer shows:** ${game.dealer[0].v}${game.dealer[0].s} ?`; if (state !== 'playing') desc = `**Your hand:** ${game.player.map(c => `${c.v}${c.s}`).join(' ')} = ${pv}\n**Dealer hand:** ${game.dealer.map(c => `${c.v}${c.s}`).join(' ')} = ${dv}\n\nYou ${state === 'bj' ? 'got Blackjack! +150%' : state === 'bust' ? 'busted!' : dv > 21 ? 'dealer busts, you win!' : pv > dv ? 'you win!' : pv === dv ? 'push' : 'dealer wins'}`; return new EmbedBuilder().setColor(0x5865f2).setTitle('🎰 Blackjack').setDescription(desc).addFields({ name: '💰 Bet', value: fmtC(game.bet), inline: true }, { name: '💳 Balance', value: fmtC(game.balance), inline: true }); }
+function bjRow() { return new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('bj_hit').setLabel('Hit').setStyle(ButtonStyle.Primary), new ButtonBuilder().setCustomId('bj_stand').setLabel('Stand').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('bj_double').setLabel('Double').setStyle(ButtonStyle.Danger)); }
+async function resolveBJ(interaction, game) { let dv = hval(game.dealer); while (dv < 17) { game.dealer.push(game.deck.pop()); dv = hval(game.dealer); } const pv = hval(game.player); let won = false, mult = 1; if (pv > 21) { addCoins(game.userId, -game.bet); } else if (dv > 21 || pv > dv) { won = true; mult = 2; addCoins(game.userId, game.bet * mult); } else if (pv === dv) { addCoins(game.userId, game.bet); } else { addCoins(game.userId, -game.bet); } const newBalance = getEcon(game.userId).coins; bjGames.delete(game.userId); await interaction.message.edit({ embeds: [bjEmbed({ ...game, balance: newBalance }, won ? 'win' : pv === dv ? 'push' : 'lose')], components: [] }).catch(() => {}); }
+const bjGames = new Map(); const heists = new Map();
+
+// Permission helpers
+function isAdmin(m) { return m.permissions.has(PermissionFlagsBits.Administrator); }
+function isMod(m) { return isAdmin(m) || m.permissions.has(PermissionFlagsBits.ModerateMembers); }
+function hasAllow(m, cmd) { if (isAdmin(m)) return true; const db = readDB('allows'); if (db.users?.[m.id]?.includes(cmd)) return true; for (const rid of m.roles.cache.keys()) if (db.roles?.[rid]?.includes(cmd)) return true; return false; }
+function denyA(i) { return i.reply({ content: '❌ Admin only.', ephemeral: true }); }
+function denyM(i) { return i.reply({ content: '❌ Mod only.', ephemeral: true }); }
+function denyAllow(i, cmd) { return i.reply({ content: `❌ Need \`${cmd}\` permission.`, ephemeral: true }); }
+
+// Prefix system
+function getPrefix(guildId) { const cfg = readDB('config'); return cfg.prefix || '!'; }
+async function handlePrefixCommand(message) {
+  if (message.author.bot || !message.guild) return;
+  const prefix = getPrefix(message.guild.id);
+  if (!message.content.startsWith(prefix)) return;
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
+  const cmd = args.shift().toLowerCase();
+  if (cmd === 'ping') await message.reply('Pong! 🏓');
+  else if (cmd === 'help') await message.reply('Use `/` commands for all features!');
+}
+
+// Filter & anti-spam
+const userMsgMap = new Map();
+async function handleAntiSpam(msg) { 
+  if (isMod(msg.member)) return;
+  const cfg = readDB('config').antispam; 
+  if (!cfg?.enabled) return; 
+  const key = msg.author.id, now = Date.now(); 
+  if (!userMsgMap.has(key)) userMsgMap.set(key, []); 
+  const msgs = userMsgMap.get(key).filter(t => now - t < cfg.interval); 
+  msgs.push(now); 
+  userMsgMap.set(key, msgs); 
+  if (msgs.length >= cfg.threshold) { 
+    if (cfg.action === 'delete') await msg.delete().catch(() => {}); 
+    else if (cfg.action === 'mute') await msg.member?.timeout(10 * 60 * 1000, 'Auto-spam').catch(() => {}); 
+    userMsgMap.delete(key); 
+  } 
+}
+const abuseCache = new Map();
+async function handleAntiAbuse(msg) { 
+  if (isMod(msg.member)) return;
+  const cfg = readDB('config').antiabuse; 
+  if (!cfg?.enabled) return; 
+  if (msg.mentions.users.size >= 5 && cfg.blockMassPing) { 
+    await msg.delete().catch(() => {}); 
+    await msg.member?.timeout(5 * 60 * 1000, 'Mass mention'); 
+  } 
+  const actions = ['ban', 'kick']; 
+  for (const a of actions) if (msg.content.toLowerCase().includes(`/${a}`) && cfg[`blockMass${a.charAt(0).toUpperCase() + a.slice(1)}`]) { 
+    const key = `${msg.author.id}_${a}`, now = Date.now(); 
+    if (!abuseCache.has(key)) abuseCache.set(key, []); 
+    const times = abuseCache.get(key).filter(t => now - t < 10000); 
+    times.push(now); 
+    abuseCache.set(key, times); 
+    if (times.length >= 3) { 
+      await msg.member?.timeout(60 * 60 * 1000, 'Mass mod command spam').catch(() => {}); 
+      abuseCache.delete(key); 
+    } 
+  } 
+}
+
+function filterCheck(content, userId) { 
+  const lists = readDB('lists'); 
+  const wl = lists.whitelist?.[userId]; 
+  if (wl?.scope === 'all') return { matched: false }; 
+  const db = readDB('wordfilter'); 
+  const words = db.words || []; 
+  const anti = readDB('config').antibypass !== false; 
+  let normalized = content.toLowerCase(); 
+  if (anti) normalized = normalized.replace(/[^\w\s]/g, '').replace(/([a-z])\1{2,}/g, '$1$1'); 
+  for (const w of words) { 
+    if (wl?.words?.includes(w)) continue; 
+    if (normalized.includes(w)) return { matched: true, word: w }; 
+  } 
+  return { matched: false }; 
+}
+
+async function trackMod(guild, modId, action) { const db = readDB('modStats'); if (!db[modId]) db[modId] = {}; db[modId][action] = (db[modId][action] || 0) + 1; db[modId].lastAction = Date.now(); writeDB('modStats', db); }
+
+async function joinSaltVoice(client) {
+  if (!SALT_VOICE_ID) return;
+  const channel = client.channels.cache.get(SALT_VOICE_ID);
+  if (!channel || channel.type !== ChannelType.GuildVoice) return;
+  try {
+    joinVoiceChannel({ channelId: channel.id, guildId: channel.guild.id, adapterCreator: channel.guild.voiceAdapterCreator });
+    console.log('✅ Joined voice channel');
+  } catch (err) { console.error('❌ Could not join voice:', err.message); }
+}
+
+async function updateMemberCount(client) { const cfg = readDB('config'); const chId = cfg.memberCountChannelId; if (!chId) return; const ch = client.channels.cache.get(chId); if (ch) await ch.setName(`👥 Members: ${client.guilds.cache.first()?.memberCount || 0}`).catch(() => {}); }
+async function sendWelcome(member) { const cfg = readDB('config').welcome || {}; if (cfg.enabled === false) return; const ch = cfg.channelId ? member.guild.channels.cache.get(cfg.channelId) : member.guild.systemChannel; if (!ch) return; const title = cfg.title || `Welcome to ${member.guild.name}!`; const msg = (cfg.message || `Hey ${member}, welcome!`).replace('{user}', `${member}`).replace('{server}', member.guild.name).replace('{memberCount}', member.guild.memberCount); const e = new EmbedBuilder().setColor(cfg.color ? parseInt(cfg.color.replace('#', ''), 16) : 0x5865f2).setTitle(title).setDescription(msg).setTimestamp(); if (cfg.useEmbed !== false && cfg.thumbnail !== false) e.setThumbnail(member.user.displayAvatarURL({ dynamic: true })); await ch.send({ embeds: [e] }).catch(() => {}); if (cfg.dmEnabled) { try { await member.send({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`Welcome to ${member.guild.name}!`).setDescription(`Hey ${member}, glad to have you!\n\nCheck out the rules and have fun.`).setTimestamp()] }); } catch {} } }
+
+async function openTicketCh(interaction, reason, type) { const cfg = readDB('config').ticket || {}; const catId = cfg.categoryId; const supportRoleId = cfg.supportRoleId; const limit = cfg.limitPerUser || 3; const tickets = readDB('tickets'); const existing = Object.values(tickets).filter(t => t.userId === interaction.user.id && t.status === 'open'); if (existing.length >= limit) { await interaction.editReply({ content: `❌ You already have ${existing.length} open tickets (max ${limit}). Close some first.` }); return null; } const ch = await interaction.guild.channels.create({ name: `ticket-${interaction.user.username}`, type: ChannelType.GuildText, parent: catId || null, permissionOverwrites: [{ id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] }, { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] }, ...(supportRoleId ? [{ id: supportRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : [])] }); const ticketNum = Object.keys(tickets).length + 1; tickets[ch.id] = { channelId: ch.id, userId: interaction.user.id, reason, type, createdAt: new Date().toISOString(), status: 'open', ticketNum, claimedBy: null, priority: 'normal' }; writeDB('tickets', tickets); await ch.send({ content: `${interaction.user}`, embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle(`🎫 Ticket #${ticketNum}`).setDescription(`**Reason:** ${reason}\n**Type:** ${type}\n\nSupport will be with you shortly.`).setFooter({ text: `Use buttons below or /ticket` }).setTimestamp()], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('ticket_claim').setLabel('Claim').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('ticket_priority').setLabel('Set Priority').setStyle(ButtonStyle.Secondary))] }); return { ch: ch.toString() }; }
+async function closeTicketCh(interaction) { const tickets = readDB('tickets'); const t = tickets[interaction.channel.id]; if (!t) return interaction.reply({ content: '❌ Not a ticket.', ephemeral: true }); t.status = 'closed'; t.closedAt = new Date().toISOString(); writeDB('tickets', tickets); await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🔒 Ticket Closed').setDescription('This ticket will be deleted in 5 seconds.')] }); setTimeout(() => interaction.channel.delete().catch(() => {}), 5000); }
+
+async function endGiveaway(client, messageId) { const gw = readDB('giveaways'); const g = gw[messageId]; if (!g || g.ended) return; g.ended = true; const channel = client.channels.cache.get(g.channelId); if (channel) { const winners = pickWinners(g.entries, g.winnersCount); const winnerMentions = winners.map(id => `<@${id}>`).join(', ') || 'No entries'; await channel.send({ embeds: [new EmbedBuilder().setColor(0xff73fa).setTitle('🎉 GIVEAWAY ENDED 🎉').setDescription(`**Prize:** ${g.prize}\n**Winner(s):** ${winnerMentions}`).setTimestamp()] }); try { const msg = await channel.messages.fetch(messageId); if (msg) await msg.edit({ components: [] }); } catch {} } writeDB('giveaways', gw); }
+
+async function resolveHeist(client, guildId, channelId) { const h = heists.get(guildId); if (!h) return; const pot = h.participants.reduce((a, p) => a + p.bet, 0); const success = Math.random() < 0.4; const channel = client.channels.cache.get(channelId); if (!channel) return; if (success) { const mult = 1 + (h.participants.length - 1) * 0.1; const totalWin = Math.floor(pot * mult); const share = Math.floor(totalWin / h.participants.length); for (const p of h.participants) addCoins(p.id, share); await channel.send({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🏆 Heist Successful!').setDescription(`The crew escaped with **${fmtC(totalWin)}**!\nEach member received **${fmtC(share)}**.`).setFooter({ text: `+${mult * 100 - 100}% bonus for teamwork` })] }); } else { const fine = Math.floor(pot * 0.3); for (const p of h.participants) addCoins(p.id, -Math.floor(fine / h.participants.length)); await channel.send({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('💀 Heist Failed!').setDescription(`The crew got caught and lost **${fmtC(fine)}** in fines.`)] }); } heists.delete(guildId); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  ROBLOX UPDATE
+// ═══════════════════════════════════════════════════════════════════════════════
+async function sendRobloxUpdate(client, data) {
+  const cfg = readDB('config').roblox || {};
+  const channelId = cfg.channelId || ROBLOX_CHAN_ID;
+  const channel = client.channels.cache.get(channelId);
+  if (!channel) return console.error('❌ Roblox channel not found');
+
+  const pingRole = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>\n` : '';
+  const embedColor = cfg.color ? parseInt(cfg.color.replace('#', ''), 16) : 0xff6600;
+
+  let description = `> **${data.liveMsg || 'Live update detected!'}**\n> *${data.patchNote || 'Salt is patched.'}*`;
+  const embed = new EmbedBuilder()
+    .setColor(embedColor)
+    .setTitle(cfg.title || 'ROBLOX Update Detected')
+    .setDescription(description)
+    .addFields(
+      { name: 'Platform', value: data.platform || 'Windows', inline: true },
+      { name: 'Version Hash', value: `\`${data.versionHash}\``, inline: true },
+      { name: 'Date', value: `<t:${Math.floor(data.timestamp / 1000)}:F>`, inline: true }
+    )
+    .setFooter({ text: cfg.footer || 'Source: whatexpsare.online • SRE Bot', iconURL: client.user.displayAvatarURL() })
+    .setTimestamp(data.timestamp);
+
+  if (cfg.thumbnail) embed.setThumbnail(cfg.thumbnail);
+  if (data.downloadNumbers) embed.addFields({ name: '📦 Download version', value: data.downloadNumbers, inline: false });
+  if (data.downloadUrl) embed.addFields({ name: '🔗 Download Link', value: `[Click here to download Roblox](${data.downloadUrl})`, inline: false });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`copy_hash_${data.versionHash.slice(-8)}`).setLabel('Copy Hash').setStyle(ButtonStyle.Secondary).setEmoji('📋'),
+    new ButtonBuilder().setLabel('Download Roblox').setStyle(ButtonStyle.Link).setURL(data.downloadUrl || cfg.downloadUrl || 'https://www.roblox.com/download').setEmoji('⬇️')
+  );
+  await channel.send({ content: pingRole, embeds: [embed], components: [row] });
+}
+
+async function checkRoblox(client) {
+  try {
+    const cfg = readDB('config').roblox || {};
+    let latestUpdate = null, allUpdates = [];
+    for (const site of ROBLOX_SITES) {
+      try {
+        const res = await axios.get(site.trim(), { timeout: 10000, headers: { 'User-Agent': 'SRE-Bot/1.0' } });
+        let versionHash = null, platform = 'Windows', rawDate = null, numbers = null, liveMsg = null, patchNote = null, downloadUrl = null;
+        if (res.headers['content-type']?.includes('html')) {
+          const $ = cheerio.load(res.data);
+          versionHash = $('meta[name="version-hash"]').attr('content') || $('meta[property="roblox:version"]').attr('content') || $('.version-hash').text().trim() || res.data.match(/version-[a-f0-9]{16}/i)?.[0] || res.data.match(/[a-f0-9]{16}/i)?.[0];
+          platform = $('meta[name="platform"]').attr('content') || $('.platform').text().trim() || 'Windows';
+          rawDate = $('meta[name="update-date"]').attr('content') || $('.update-date').text().trim() || $('time').attr('datetime');
+          const numMatch = res.data.match(/\b\d{1,2}\s+\d\s+\d\s+\d\s+\d\s+\d\b/);
+          if (numMatch) numbers = numMatch[0];
+          const urlMatch = res.data.match(/https?:\/\/[^\s]+roblox[^\s]+\.exe/i) || res.data.match(/https?:\/\/setup\.rbxcdn\.com\/[^\s]+/i);
+          if (urlMatch) downloadUrl = urlMatch[0];
+          if (res.data.match(/Live update detected!/i)) liveMsg = 'Live update detected!';
+          const patchMatch = res.data.match(/Salt is patched|Real is patched|Medium is patched/i);
+          if (patchMatch) patchNote = patchMatch[0];
+        } else {
+          const json = typeof res.data === 'object' ? res.data : JSON.parse(res.data);
+          versionHash = json.versionHash || json.build || json.version;
+          platform = json.platform || 'Cross-Platform';
+          rawDate = json.date || json.timestamp || json.publishedAt;
+          numbers = json.downloadNumbers || json.buildNumbers;
+          liveMsg = json.liveMessage;
+          patchNote = json.patchNote;
+          downloadUrl = json.downloadUrl;
+        }
+        if (!versionHash) continue;
+        let timestamp = rawDate ? new Date(rawDate).getTime() : Date.now();
+        if (isNaN(timestamp)) timestamp = Date.now();
+        allUpdates.push({ source: site, versionHash: String(versionHash).trim(), platform: String(platform).trim(), timestamp, downloadNumbers: numbers || null, downloadUrl: downloadUrl || null, liveMsg: liveMsg || cfg.liveMessage || 'Live update detected!', patchNote: patchNote || cfg.patchNote || 'Salt is patched.' });
+      } catch (e) { console.warn(`⚠️ Failed to fetch ${site}:`, e.message); }
+    }
+    if (allUpdates.length === 0) return;
+    allUpdates.sort((a, b) => b.timestamp - a.timestamp);
+    latestUpdate = allUpdates[0];
+    const stored = readDB('robloxState') || {};
+    let hasNewUpdate = false;
+    for (const update of allUpdates) { if (stored.lastHash !== update.versionHash) { hasNewUpdate = true; latestUpdate = update; break; } }
+    if (!hasNewUpdate && stored.lastHash === latestUpdate.versionHash) return;
+    stored.lastHash = latestUpdate.versionHash;
+    stored.lastChecked = Date.now();
+    stored.lastUpdateData = latestUpdate;
+    stored.updateHistory = stored.updateHistory || [];
+    stored.updateHistory.unshift({ hash: latestUpdate.versionHash, timestamp: latestUpdate.timestamp, date: new Date(latestUpdate.timestamp).toISOString() });
+    if (stored.updateHistory.length > 10) stored.updateHistory.pop();
+    writeDB('robloxState', stored);
+    await sendRobloxUpdate(client, latestUpdate);
+    console.log(`✅ New Roblox update detected: ${latestUpdate.versionHash} from ${latestUpdate.source}`);
+  } catch (err) { console.error('❌ checkRoblox error:', err); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  DISCORD COMMANDS LIST – all options have descriptions, names ≤25 chars
+// ═══════════════════════════════════════════════════════════════════════════════
+const CMDS = [
+  { name: 'say', description: 'Make the bot say something', options: [{ name: 'msg', type: 3, description: 'Text to say', required: true }, { name: 'ch', type: 7, description: 'Channel to send to' }, { name: 'img', type: 3, description: 'Image URL to attach' }] },
+  { name: 'embed', description: 'Send an embed', options: [{ name: 'title', type: 3, description: 'Embed title', required: true }, { name: 'desc', type: 3, description: 'Embed description', required: true }, { name: 'col', type: 3, description: 'Hex color code' }, { name: 'foot', type: 3, description: 'Footer text' }, { name: 'img', type: 3, description: 'Image URL' }, { name: 'thumb', type: 3, description: 'Thumbnail URL' }, { name: 'ch', type: 7, description: 'Channel to send to' }] },
+  { name: 'status', description: 'Change bot status', options: [{ name: 'text', type: 3, description: 'Status text', required: true }, { name: 'type', type: 3, description: 'Activity type', choices: [{ name: 'Playing', value: '0' }, { name: 'Listening', value: '2' }, { name: 'Watching', value: '3' }] }, { name: 'pres', type: 3, description: 'Online presence', choices: [{ name: 'Online', value: 'online' }, { name: 'Idle', value: 'idle' }, { name: 'DND', value: 'dnd' }, { name: 'Invisible', value: 'invisible' }] }] },
+  { name: 'mcount', description: 'Show member count' },
+  { name: 'sinfo', description: 'Server info' },
+  { name: 'uinfo', description: 'User info', options: [{ name: 'user', type: 6, description: 'Target user' }] },
+  { name: 'av', description: 'Show avatar', options: [{ name: 'user', type: 6, description: 'Target user' }] },
+  { name: 'purge', description: 'Delete messages', options: [{ name: 'amt', type: 4, description: 'Number of messages', required: true }, { name: 'user', type: 6, description: 'Filter by user' }, { name: 'bots', type: 5, description: 'Only bots' }, { name: 'links', type: 5, description: 'Only messages with links' }, { name: 'embeds', type: 5, description: 'Only embeds' }, { name: 'contains', type: 3, description: 'Filter by text' }] },
+  { name: 'prefix', description: 'Set custom prefix', options: [{ name: 'pre', type: 3, description: 'New prefix (e.g. !, ?, $)', required: true }] },
+  { name: 'welcome', description: 'Welcome config', options: [{ name: 'set', type: 1, description: 'Set a setting', options: [{ name: 'key', type: 3, description: 'Setting name', required: true }, { name: 'val', type: 3, description: 'Setting value', required: true }] }, { name: 'toggle', type: 1, description: 'Toggle a feature', options: [{ name: 'feat', type: 3, description: 'Feature to toggle', required: true }] }, { name: 'test', type: 1, description: 'Send test welcome' }, { name: 'reset', type: 1, description: 'Reset config' }, { name: 'stat', type: 1, description: 'Show current config' }] },
+  { name: 'gkey', description: 'Generate a license key', options: [{ name: 'dur', type: 3, description: 'Duration (e.g. 30d, 12h)', required: true }, { name: 'hlim', type: 4, description: 'Max HWIDs' }, { name: 'asgn', type: 6, description: 'User to assign key to' }] },
+  { name: 'kinfo', description: 'Key info', options: [{ name: 'key', type: 3, description: 'Key code' }, { name: 'user', type: 6, description: 'User to check keys for' }] },
+  { name: 'rkey', description: 'Revoke a key', options: [{ name: 'key', type: 3, description: 'Key to revoke', required: true }] },
+  { name: 'wl', description: 'Manage filter whitelist', options: [{ name: 'add', type: 1, description: 'Add user to whitelist', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'scope', type: 3, description: 'Scope (all or specific word)', required: true, choices: [{ name: 'All words', value: 'all' }, { name: 'Specific word', value: 'word' }] }, { name: 'word', type: 3, description: 'Specific word if scope=word' }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'rem', type: 1, description: 'Remove user from whitelist', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'chk', type: 1, description: 'Check whitelist status', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'list', type: 1, description: 'List all whitelisted users' }, { name: 'addw', type: 1, description: 'Add allowed word for user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'word', type: 3, description: 'Word to allow', required: true }] }] },
+  { name: 'rwl', description: 'Remove whitelist entry', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'word', type: 3, description: 'Specific word to remove' }] },
+  { name: 'bl', description: 'Blacklist user', options: [{ name: 'add', type: 1, description: 'Add user to blacklist', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'rem', type: 1, description: 'Remove user from blacklist', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'list', type: 1, description: 'List blacklisted users' }] },
+  { name: 'allow', description: 'Grant command permission', options: [{ name: 'user', type: 1, description: 'Grant to user', options: [{ name: 'target', type: 6, description: 'User', required: true }, { name: 'cmds', type: 3, description: 'Comma-separated command names', required: true }] }, { name: 'role', type: 1, description: 'Grant to role', options: [{ name: 'target', type: 8, description: 'Role', required: true }, { name: 'cmds', type: 3, description: 'Comma-separated command names', required: true }] }, { name: 'list', type: 1, description: 'List current allows' }] },
+  { name: 'rallow', description: 'Revoke command permission', options: [{ name: 'user', type: 1, description: 'Revoke from user', options: [{ name: 'target', type: 6, description: 'User', required: true }, { name: 'cmds', type: 3, description: 'Commands to revoke (or "all")' }] }, { name: 'role', type: 1, description: 'Revoke from role', options: [{ name: 'target', type: 8, description: 'Role', required: true }, { name: 'cmds', type: 3, description: 'Commands to revoke (or "all")' }] }] },
+  { name: 'mod', description: 'Moderation commands', options: [
+    { name: 'ban', type: 1, description: 'Ban a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }, { name: 'days', type: 4, description: 'Days of messages to delete' }] },
+    { name: 'sban', type: 1, description: 'Softban (ban & unban)', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }, { name: 'days', type: 4, description: 'Days of messages to delete' }] },
+    { name: 'tban', type: 1, description: 'Temporary ban', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'dur', type: 3, description: 'Duration (e.g. 1h, 2d, 1w)', required: true }, { name: 'reason', type: 3, description: 'Reason' }, { name: 'days', type: 4, description: 'Days of messages to delete' }] },
+    { name: 'unban', type: 1, description: 'Unban a user', options: [{ name: 'uid', type: 3, description: 'User ID', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'kick', type: 1, description: 'Kick a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'mute', type: 1, description: 'Timeout a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'dur', type: 3, description: 'Duration (e.g. 30m, 1h)', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'unmute', type: 1, description: 'Remove timeout', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'vkick', type: 1, description: 'Kick user from voice', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'mvall', type: 1, description: 'Move all voice members', options: [{ name: 'from', type: 7, description: 'Source voice channel', required: true }, { name: 'to', type: 7, description: 'Target voice channel', required: true }] },
+    { name: 'warn', type: 1, description: 'Warn a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'strike', type: 1, description: 'Add a strike (3 = mute)', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'warns', type: 1, description: 'View warnings', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'cwarns', type: 1, description: 'Clear all warnings', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'dwarn', type: 1, description: 'Remove a warning', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'idx', type: 4, description: 'Warning number', required: true }] },
+    { name: 'notes', type: 1, description: 'Add mod note', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'note', type: 3, description: 'Note text', required: true }] },
+    { name: 'vnotes', type: 1, description: 'View notes', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'slow', type: 1, description: 'Set slowmode', options: [{ name: 'secs', type: 4, description: 'Slowmode seconds', required: true }] },
+    { name: 'lock', type: 1, description: 'Lock the channel', options: [{ name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'unlock', type: 1, description: 'Unlock the channel' },
+    { name: 'hide', type: 1, description: 'Hide from @everyone', options: [{ name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'reveal', type: 1, description: 'Reveal to @everyone' },
+    { name: 'clone', type: 1, description: 'Clone channel', options: [{ name: 'name', type: 3, description: 'New channel name' }] },
+    { name: 'ldown', type: 1, description: 'Lockdown all channels', options: [{ name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'uldwn', type: 1, description: 'Unlock all channels' },
+    { name: 'nick', type: 1, description: 'Change nickname', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'nick', type: 3, description: 'New nickname (empty to reset)' }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'logs', type: 1, description: 'View moderation history', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'case', type: 1, description: 'View specific case', options: [{ name: 'id', type: 4, description: 'Case ID', required: true }] }
+  ] },
+  { name: 'filter', description: 'Word filter', options: [{ name: 'add', type: 1, description: 'Add word to filter', options: [{ name: 'word', type: 3, description: 'Word to filter', required: true }, { name: 'act', type: 3, description: 'Action on match', choices: [{ name: 'Delete', value: 'delete' }, { name: 'Mute', value: 'mute' }] }] }, { name: 'rem', type: 1, description: 'Remove word from filter', options: [{ name: 'word', type: 3, description: 'Word to remove', required: true }] }, { name: 'list', type: 1, description: 'List filtered words' }, { name: 'abypass', type: 1, description: 'Toggle anti-bypass', options: [{ name: 'en', type: 5, description: 'Enable/disable', required: true }] }, { name: 'logch', type: 1, description: 'Set log channel', options: [{ name: 'ch', type: 7, description: 'Channel', required: true }] }, { name: 'wmsg', type: 1, description: 'Set warning message', options: [{ name: 'msg', type: 3, description: 'Message (use {user})', required: true }] }] },
+  { name: 'unfilter', description: 'Remove word from filter', options: [{ name: 'word', type: 3, description: 'Word to remove', required: true }] },
+  { name: 'aspam', description: 'Anti-spam', options: [{ name: 'en', type: 1, description: 'Enable anti-spam', options: [{ name: 'thresh', type: 4, description: 'Messages per interval' }, { name: 'int', type: 4, description: 'Interval in seconds' }, { name: 'act', type: 3, description: 'Action to take', choices: [{ name: 'Delete', value: 'delete' }, { name: 'Mute', value: 'mute' }] }] }, { name: 'dis', type: 1, description: 'Disable anti-spam' }, { name: 'stat', type: 1, description: 'Show status' }] },
+  { name: 'aabuse', description: 'Anti-abuse', options: [{ name: 'en', type: 1, description: 'Enable anti-abuse', options: [{ name: 'ping', type: 5, description: 'Block mass pings' }, { name: 'ban', type: 5, description: 'Block mass bans' }, { name: 'kick', type: 5, description: 'Block mass kicks' }, { name: 'log', type: 3, description: 'Log channel ID' }] }, { name: 'dis', type: 1, description: 'Disable anti-abuse' }, { name: 'stat', type: 1, description: 'Show status' }] },
+  { name: 'ticket', description: 'Ticket system', options: [{ name: 'open', type: 1, description: 'Open a ticket', options: [{ name: 'reason', type: 3, description: 'Reason', required: true }] }, { name: 'close', type: 1, description: 'Close current ticket' }, { name: 'add', type: 1, description: 'Add user to ticket', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'rem', type: 1, description: 'Remove user from ticket', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'list', type: 1, description: 'List open tickets' }, { name: 'rename', type: 1, description: 'Rename ticket channel', options: [{ name: 'name', type: 3, description: 'New name', required: true }] }, { name: 'claim', type: 1, description: 'Claim ticket' }, { name: 'unclaim', type: 1, description: 'Unclaim ticket' }, { name: 'prio', type: 1, description: 'Set ticket priority', options: [{ name: 'level', type: 3, description: 'Priority level', required: true, choices: [{ name: 'Low', value: 'low' }, { name: 'Normal', value: 'normal' }, { name: 'High', value: 'high' }, { name: 'Critical', value: 'critical' }] }] }, { name: 'note', type: 1, description: 'Add staff note', options: [{ name: 'text', type: 3, description: 'Note text', required: true }] }, { name: 'setup', type: 1, description: 'Configure ticket settings', options: [{ name: 'key', type: 3, description: 'Setting name', required: true }, { name: 'val', type: 3, description: 'Setting value', required: true }] }] },
+  { name: 'panel', description: 'Ticket panel', options: [{ name: 'setup', type: 1, description: 'Set panel config', options: [{ name: 'key', type: 3, description: 'Setting name', required: true }, { name: 'val', type: 3, description: 'Setting value', required: true }] }, { name: 'addtype', type: 1, description: 'Add ticket type', options: [{ name: 'id', type: 3, description: 'Type ID', required: true }, { name: 'label', type: 3, description: 'Button label', required: true }, { name: 'emoji', type: 3, description: 'Emoji' }, { name: 'style', type: 3, description: 'Button style', choices: [{ name: 'Primary', value: 'Primary' }, { name: 'Success', value: 'Success' }, { name: 'Danger', value: 'Danger' }, { name: 'Secondary', value: 'Secondary' }] }] }, { name: 'rmtype', type: 1, description: 'Remove ticket type', options: [{ name: 'id', type: 3, description: 'Type ID', required: true }] }, { name: 'types', type: 1, description: 'List ticket types' }, { name: 'prev', type: 1, description: 'Preview panel' }, { name: 'send', type: 1, description: 'Send panel to channel', options: [{ name: 'ch', type: 7, description: 'Target channel' }] }] },
+  { name: 'rbx', description: 'Roblox update config', options: [{ name: 'setup', type: 1, description: 'Set a config value', options: [{ name: 'key', type: 3, description: 'Setting name', required: true, choices: [{ name: 'channelId', value: 'channelId' }, { name: 'pingRoleId', value: 'pingRoleId' }, { name: 'title', value: 'title' }, { name: 'color', value: 'color' }, { name: 'footer', value: 'footer' }, { name: 'thumb', value: 'thumbnail' }, { name: 'dlUrl', value: 'downloadUrl' }, { name: 'liveMsg', value: 'liveMessage' }, { name: 'patchNote', value: 'patchNote' }] }, { name: 'val', type: 3, description: 'Setting value', required: true }] }, { name: 'stat', type: 1, description: 'Show current config' }, { name: 'test', type: 1, description: 'Send test update' }, { name: 'check', type: 1, description: 'Force check for updates' }] },
+  { name: 'role', description: 'Role management', options: [{ name: 'add', type: 1, description: 'Add role to user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'role', type: 8, description: 'Role', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'rem', type: 1, description: 'Remove role from user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'role', type: 8, description: 'Role', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'all', type: 1, description: 'Give role to all members', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'rmall', type: 1, description: 'Remove role from all members', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'info', type: 1, description: 'Role info', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'create', type: 1, description: 'Create a role', options: [{ name: 'name', type: 3, description: 'Role name', required: true }, { name: 'col', type: 3, description: 'Hex color' }, { name: 'hoist', type: 5, description: 'Display separately' }, { name: 'ment', type: 5, description: 'Allow mentions' }] }, { name: 'delete', type: 1, description: 'Delete a role', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'edit', type: 1, description: 'Edit a role', options: [{ name: 'role', type: 8, description: 'Role', required: true }, { name: 'name', type: 3, description: 'New name' }, { name: 'col', type: 3, description: 'New color' }, { name: 'hoist', type: 5, description: 'Display separately' }, { name: 'ment', type: 5, description: 'Allow mentions' }] }, { name: 'list', type: 1, description: 'List all roles' }, { name: 'members', type: 1, description: 'List members with role', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }] },
+  { name: 'autorole', description: 'Auto-role on join', options: [{ name: 'add', type: 1, description: 'Add autorole', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'rem', type: 1, description: 'Remove autorole', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'list', type: 1, description: 'List autoroles' }, { name: 'clear', type: 1, description: 'Clear all autoroles' }] },
+  { name: 'backup', description: 'Server backup', options: [{ name: 'create', type: 1, description: 'Create a backup' }, { name: 'list', type: 1, description: 'List backups' }, { name: 'info', type: 1, description: 'Backup info', options: [{ name: 'id', type: 3, description: 'Backup ID', required: true }] }, { name: 'delete', type: 1, description: 'Delete backup', options: [{ name: 'id', type: 3, description: 'Backup ID', required: true }] }] },
+  { name: 'load', description: 'Load backup', options: [{ name: 'id', type: 3, description: 'Backup ID', required: true }, { name: 'mode', type: 3, description: 'What to restore', required: true, choices: [{ name: 'Roles only', value: 'roles' }, { name: 'Channels only', value: 'channels' }, { name: 'All', value: 'all' }] }] },
+  { name: 'giveaway', description: 'Giveaways', options: [{ name: 'start', type: 1, description: 'Start a giveaway', options: [{ name: 'prize', type: 3, description: 'Prize name', required: true }, { name: 'dur', type: 3, description: 'Duration (e.g. 1h, 2d)', required: true }, { name: 'winners', type: 4, description: 'Number of winners' }, { name: 'req', type: 3, description: 'Requirement to enter' }, { name: 'ch', type: 7, description: 'Channel to post in' }] }, { name: 'end', type: 1, description: 'End a giveaway', options: [{ name: 'mid', type: 3, description: 'Giveaway message ID', required: true }] }, { name: 'reroll', type: 1, description: 'Reroll winners', options: [{ name: 'mid', type: 3, description: 'Giveaway message ID', required: true }] }, { name: 'list', type: 1, description: 'List active giveaways' }] },
+  { name: 'script', description: 'Script submissions', options: [{ name: 'submit', type: 1, description: 'Submit a script', options: [{ name: 'title', type: 3, description: 'Script title', required: true }, { name: 'desc', type: 3, description: 'Description', required: true }, { name: 'link', type: 3, description: 'Download link', required: true }] }, { name: 'approve', type: 1, description: 'Approve a script', options: [{ name: 'mid', type: 3, description: 'Submission message ID', required: true }, { name: 'notes', type: 3, description: 'Optional notes' }] }, { name: 'deny', type: 1, description: 'Deny a script', options: [{ name: 'mid', type: 3, description: 'Submission message ID', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }] },
+  { name: 'eco', description: 'Economy commands', options: [{ name: 'bal', type: 1, description: 'Check balance', options: [{ name: 'user', type: 6, description: 'Target user' }] }, { name: 'daily', type: 1, description: 'Claim daily reward' }, { name: 'work', type: 1, description: 'Work for coins' }, { name: 'crime', type: 1, description: 'Commit a crime' }, { name: 'fish', type: 1, description: 'Go fishing' }, { name: 'hunt', type: 1, description: 'Go hunting' }, { name: 'mine', type: 1, description: 'Go mining' }, { name: 'dep', type: 1, description: 'Deposit coins', options: [{ name: 'amt', type: 4, description: 'Amount (0 = all)', required: true }] }, { name: 'with', type: 1, description: 'Withdraw coins', options: [{ name: 'amt', type: 4, description: 'Amount (0 = all)', required: true }] }, { name: 'give', type: 1, description: 'Give coins', options: [{ name: 'user', type: 6, description: 'Recipient', required: true }, { name: 'amt', type: 4, description: 'Amount', required: true }] }, { name: 'lb', type: 1, description: 'Top 10 richest users' }, { name: 'shop', type: 1, description: 'View shop' }, { name: 'buy', type: 1, description: 'Buy an item', options: [{ name: 'item', type: 3, description: 'Item ID', required: true }] }, { name: 'inv', type: 1, description: 'View inventory', options: [{ name: 'user', type: 6, description: 'Target user' }] }] },
+  { name: 'gamble', description: 'Gamble coins', options: [{ name: 'slots', type: 1, description: 'Play slots', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }] }, { name: 'flip', type: 1, description: 'Coin flip', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }, { name: 'choice', type: 3, description: 'Heads or tails', required: true, choices: [{ name: 'Heads', value: 'heads' }, { name: 'Tails', value: 'tails' }] }] }, { name: 'dice', type: 1, description: 'Roll dice', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }, { name: 'pred', type: 3, description: 'Low, high, or exact', required: true, choices: [{ name: 'Low', value: 'low' }, { name: 'High', value: 'high' }, { name: 'Exact', value: 'exact' }] }, { name: 'num', type: 4, description: 'Number if exact' }] }, { name: 'roulette', type: 1, description: 'Play roulette', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }, { name: 'choice', type: 3, description: 'Red, black, even, or odd', required: true, choices: [{ name: 'Red', value: 'red' }, { name: 'Black', value: 'black' }, { name: 'Even', value: 'even' }, { name: 'Odd', value: 'odd' }] }] }, { name: 'bj', type: 1, description: 'Play blackjack', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }] }, { name: 'rob', type: 1, description: 'Rob another user', options: [{ name: 'user', type: 6, description: 'Target', required: true }] }] },
+  { name: 'heist', description: 'Organize a heist', options: [{ name: 'start', type: 1, description: 'Start a heist', options: [{ name: 'bet', type: 4, description: 'Minimum bet', required: true }] }, { name: 'join', type: 1, description: 'Join a heist', options: [{ name: 'bet', type: 4, description: 'Your bet', required: true }] }, { name: 'status', type: 1, description: 'Check heist status' }] }
+];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  CLIENT + EVENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildVoiceStates,
+  ],
+});
+
+client.once('clientReady', async () => {
+  console.log(`\n╔═══════════════════════════════════╗`);
+  console.log(`║  SRE Bot v5 — by Salt Team        ║`);
+  console.log(`║  ${client.user.tag.padEnd(33)}║`);
+  console.log(`╚═══════════════════════════════════╝\n`);
+  try {
+    const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
+    await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: CMDS });
+    console.log(`✅ ${CMDS.length} commands registered`);
+  } catch (e) { console.error('❌ Commands:', e.message); }
+  for (const [id, g] of Object.entries(readDB('giveaways'))) {
+    if (g.ended) continue;
+    const rem = new Date(g.endsAt).getTime() - Date.now();
+    if (rem <= 0) endGiveaway(client, id).catch(() => { });
+    else setTimeout(() => endGiveaway(client, id), rem);
+  }
+  await joinSaltVoice(client);
+  await updateMemberCount(client);
+  setInterval(() => updateMemberCount(client), 6 * 60 * 1000);
+  if (axios) {
+    setTimeout(async () => { await checkRoblox(client); setInterval(() => checkRoblox(client), 10 * 60 * 1000); }, 20000);
+  }
+  client.user.setPresence({ status: 'online', activities: [{ name: 'SRE | Salt Team', type: 3 }] });
+});
+
+// Prefix & message handler
+client.on('messageCreate', async msg => {
+  if (msg.author.bot || !msg.guild) return;
+  await handlePrefixCommand(msg);
+  await handleAntiSpam(msg);
+  await handleAntiAbuse(msg);
+  const exempt = msg.member?.permissions.has(PermissionFlagsBits.ModerateMembers) || msg.member?.permissions.has(PermissionFlagsBits.Administrator);
+  if (!exempt) {
+    const r = filterCheck(msg.content, msg.author.id);
+    if (r.matched) {
+      await msg.delete().catch(() => { });
+      const fcfg = readDB('wordfilter');
+      const warnMsg = fcfg.warnMessage || '🚫 {user}, your message was removed.';
+      const n = await msg.channel.send({ embeds: [new EmbedBuilder().setColor(0xff4444).setDescription(warnMsg.replace('{user}', msg.author.toString())).setFooter({ text: readDB('config').antibypass !== false ? 'Bypass attempts are also caught.' : '' })] });
+      setTimeout(() => n.delete().catch(() => { }), 5000);
+      if (fcfg.logChannelId) {
+        const lch = msg.guild.channels.cache.get(fcfg.logChannelId);
+        if (lch) await lch.send({ embeds: [new EmbedBuilder().setColor(0xff8800).setTitle('🔍 Filter Violation').addFields({ name: 'User', value: `${msg.author} (${msg.author.id})`, inline: true }, { name: 'Channel', value: `${msg.channel}`, inline: true }, { name: 'Word', value: `\`${r.word[0]}${'*'.repeat(Math.max(0, r.word.length - 2))}${r.word[r.word.length - 1] || ''}\``, inline: true }, { name: 'Message', value: msg.content.substring(0, 200) }).setTimestamp()] }).catch(() => { });
+      }
+      const wordEntry = fcfg.wordActions?.[r.word.toLowerCase()];
+      if (wordEntry === 'mute' || wordEntry === 'mute10') await msg.member?.timeout(10 * 60 * 1000, 'Filter violation').catch(() => { });
+      try { await msg.author.send({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🚫 Message Removed').setDescription(`Your message in **${msg.guild.name}** was removed for containing a filtered word.`).setTimestamp()] }); } catch { }
+    }
+  }
+});
+
+client.on('guildMemberAdd', async member => {
+  const cfg = readDB('config');
+  for (const rId of (cfg.autoroles || [])) { const r = member.guild.roles.cache.get(rId); if (r && !r.managed) await member.roles.add(r).catch(() => { }); }
+  await sendWelcome(member);
+  await updateMemberCount(client);
+});
+client.on('guildMemberRemove', () => updateMemberCount(client));
+client.on('voiceStateUpdate', (o, n) => {
+  if (o.member?.id === client.user.id && o.channelId === SALT_VOICE_ID && !n.channelId) {
+    console.log('🔊 Disconnected from salt voice — rejoining in 3s...');
+    setTimeout(() => joinSaltVoice(client), 3000);
+  }
+});
+
+function logCase(guildId, action, userId, modId, reason, extra = {}) {
+  const cases = readDB('cases'); if (!cases[guildId]) cases[guildId] = [];
+  const id = cases[guildId].length + 1;
+  cases[guildId].push({ id, action, userId, modId, reason, timestamp: new Date().toISOString(), ...extra });
+  writeDB('cases', cases);
+  return id;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  INTERACTION HANDLER – full command logic (short names)
+// ═══════════════════════════════════════════════════════════════════════════════
+client.on('interactionCreate', async interaction => {
+  // ── BUTTONS (unchanged from your original) ─────────────────────────────────
+  if (interaction.isButton()) {
+    const { customId } = interaction;
+    if (customId.startsWith('copy_hash_')) {
+      const hashPart = customId.replace('copy_hash_', '');
+      const state = readDB('robloxState');
+      const fullHash = state?.lastHash || `version-${hashPart}`;
+      await interaction.reply({ content: `📋 Copied: \`${fullHash}\``, ephemeral: true });
+      return;
+    }
+    if (customId === 'ticket_close') return closeTicketCh(interaction);
+    if (customId === 'ticket_claim') {
+      if (!isMod(interaction.member)) return interaction.reply({ content: '❌ Mods only.', ephemeral: true });
+      const tickets = readDB('tickets'), t = tickets[interaction.channel.id]; if (!t) return;
+      t.claimedBy = interaction.user.id; writeDB('tickets', tickets);
+      return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setDescription(`✋ Claimed by ${interaction.user}`).setTimestamp()] });
+    }
+    if (customId === 'ticket_priority') {
+      if (!isMod(interaction.member)) return interaction.reply({ content: '❌ Mods only.', ephemeral: true });
+      const menu = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('ticket_priority_select').setPlaceholder('Select priority level').addOptions(
+        new StringSelectMenuOptionBuilder().setLabel('🟢 Low').setValue('low'),
+        new StringSelectMenuOptionBuilder().setLabel('🟡 Normal').setValue('normal'),
+        new StringSelectMenuOptionBuilder().setLabel('🔴 High').setValue('high'),
+        new StringSelectMenuOptionBuilder().setLabel('🚨 Critical').setValue('critical')
+      ));
+      return interaction.reply({ content: 'Select a priority level:', components: [menu], ephemeral: true });
+    }
+    if (customId === 'giveaway_enter') {
+      const gw = readDB('giveaways'), g = gw[interaction.message.id];
+      if (!g || g.ended) return interaction.reply({ content: '❌ Giveaway ended.', ephemeral: true });
+      if (g.entries.includes(interaction.user.id)) return interaction.reply({ content: '✅ Already entered!', ephemeral: true });
+      g.entries.push(interaction.user.id); writeDB('giveaways', gw);
+      const old = interaction.message.embeds[0];
+      if (old) {
+        const u = EmbedBuilder.from(old);
+        const idx = old.fields.findIndex(f => f.name === 'Entries');
+        if (idx !== -1) u.spliceFields(idx, 1, { name: 'Entries', value: `${g.entries.length}`, inline: true });
+        await interaction.message.edit({ embeds: [u] }).catch(() => { });
+      }
+      return interaction.reply({ content: `🎉 Entered for **${g.prize}**!`, ephemeral: true });
+    }
+    if (customId === 'script_approve' || customId === 'script_deny') {
+      if (!isMod(interaction.member)) return interaction.reply({ content: '❌ Mods only.', ephemeral: true });
+      const ap = customId === 'script_approve', old = interaction.message.embeds[0]; if (!old) return;
+      const u = EmbedBuilder.from(old).setColor(ap ? 0x00d26a : 0xff4444).spliceFields(old.fields.findIndex(f => f.name === 'Status'), 1, { name: 'Status', value: ap ? '✅ Approved' : '❌ Denied' }, { name: 'Reviewed By', value: `${interaction.user}` });
+      await interaction.message.edit({ embeds: [u], components: [] });
+      return interaction.reply({ content: `${ap ? '✅ Approved' : '❌ Denied'}.`, ephemeral: true });
+    }
+    if (customId === 'heist_join') {
+      const h = heists.get(interaction.guildId);
+      if (!h || h.status !== 'joining') return interaction.reply({ content: '❌ No active heist lobby.', ephemeral: true });
+      if (h.participants.find(p => p.id === interaction.user.id)) return interaction.reply({ content: '❌ Already in.', ephemeral: true });
+      const e = getEcon(interaction.user.id);
+      if (e.coins < h.minBet) return interaction.reply({ content: `❌ Need at least ${fmtC(h.minBet)}.`, ephemeral: true });
+      addCoins(interaction.user.id, -h.minBet); h.participants.push({ id: interaction.user.id, bet: h.minBet });
+      const names = h.participants.map(p => `<@${p.id}>`).join(', ');
+      const old = interaction.message.embeds[0]; if (old) {
+        const u = EmbedBuilder.from(old);
+        const idx = old.fields.findIndex(f => f.name === 'Crew');
+        if (idx !== -1) u.spliceFields(idx, 1, { name: 'Crew', value: names });
+        else u.addFields({ name: 'Crew', value: names });
+        await interaction.message.edit({ embeds: [u] }).catch(() => { });
+      }
+      return interaction.reply({ content: `✅ Joined for ${fmtC(h.minBet)}!`, ephemeral: true });
+    }
+    if (customId.startsWith('panel_ticket_')) {
+      const type = customId.replace('panel_ticket_', '');
+      const pCfg = readDB('config').panel || {}, tData = (pCfg.types || []).find(t => t.id === type);
+      await interaction.deferReply({ ephemeral: true });
+      const result = await openTicketCh(interaction, tData?.label || type, type);
+      if (result) await interaction.editReply({ content: `✅ Ticket created: ${result.ch}` });
+      return;
+    }
+    if (['bj_hit', 'bj_stand', 'bj_double'].includes(customId)) {
+      const g = bjGames.get(interaction.user.id);
+      if (!g || g.messageId !== interaction.message.id) return interaction.reply({ content: '❌ Not your game.', ephemeral: true });
+      await interaction.deferUpdate();
+      if (customId === 'bj_hit') {
+        g.player.push(g.deck.pop()); const pv = hval(g.player);
+        if (pv > 21) { addCoins(g.userId, -g.bet); bjGames.delete(g.userId); return interaction.message.edit({ embeds: [bjEmbed({ ...g, balance: getEcon(g.userId).coins }, 'bust')], components: [] }).catch(() => { }); }
+        if (pv === 21) return resolveBJ(interaction, g);
+        return interaction.message.edit({ embeds: [bjEmbed(g)], components: [bjRow()] }).catch(() => { });
+      }
+      if (customId === 'bj_double') {
+        const e = getEcon(g.userId); if (e.coins < g.bet) return interaction.followUp({ content: '❌ Not enough coins.', ephemeral: true });
+        addCoins(g.userId, -g.bet); g.bet *= 2; g.player.push(g.deck.pop());
+        const pv = hval(g.player);
+        if (pv > 21) { bjGames.delete(g.userId); return interaction.message.edit({ embeds: [bjEmbed({ ...g, balance: getEcon(g.userId).coins }, 'bust')], components: [] }).catch(() => { }); }
+        return resolveBJ(interaction, g);
+      }
+      if (customId === 'bj_stand') return resolveBJ(interaction, g);
+    }
+    return;
+  }
+
+  // ── SELECT MENUS ──────────────────────────────────────────────────────────
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'ticket_priority_select') {
+      const level = interaction.values[0];
+      const tickets = readDB('tickets'), t = tickets[interaction.channel.id];
+      if (!t) return interaction.reply({ content: '❌ Not a ticket.', ephemeral: true });
+      t.priority = level; writeDB('tickets', tickets);
+      const PMAP = { low: '🟢 Low', normal: '🟡 Normal', high: '🔴 High', critical: '🚨 Critical' };
+      return interaction.update({ content: `✅ Priority set to **${PMAP[level]}**.`, components: [] });
+    }
+  }
+
+  if (!interaction.isChatInputCommand()) return;
+  const cmd = interaction.commandName;
+
+  try {
+    // ----- UTILITY (short names) -----
+    if (cmd === 'say') {
+      if (!hasAllow(interaction.member, 'say')) return denyAllow(interaction, 'say');
+      const text = interaction.options.getString('msg')?.replace(/\\n/g, '\n') || '';
+      const imageUrl = interaction.options.getString('img');
+      const ch = interaction.options.getChannel('ch') || interaction.channel;
+      const files = imageUrl ? [{ attachment: imageUrl }] : [];
+      await ch.send({ content: text, files });
+      return interaction.reply({ content: '✅ Sent!', ephemeral: true });
+    }
+    if (cmd === 'embed') {
+      if (!hasAllow(interaction.member, 'embed')) return denyAllow(interaction, 'embed');
+      const title = interaction.options.getString('title');
+      const desc = interaction.options.getString('desc').replace(/\\n/g, '\n');
+      const cStr = interaction.options.getString('col') || '#5865F2';
+      const footer = interaction.options.getString('foot');
+      const image = interaction.options.getString('img');
+      const thumb = interaction.options.getString('thumb');
+      const ch = interaction.options.getChannel('ch') || interaction.channel;
+      let color = 0x5865f2; try { color = parseInt(cStr.replace('#', ''), 16); } catch { }
+      const e = new EmbedBuilder().setTitle(title).setDescription(desc).setColor(color).setTimestamp();
+      if (footer) e.setFooter({ text: footer }); if (image) e.setImage(image); if (thumb) e.setThumbnail(thumb);
+      await ch.send({ embeds: [e] });
+      return interaction.reply({ content: '✅ Sent!', ephemeral: true });
+    }
+    if (cmd === 'status') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      client.user.setPresence({ status: interaction.options.getString('pres') || 'online', activities: [{ name: interaction.options.getString('text'), type: parseInt(interaction.options.getString('type') || '3') }] });
+      return interaction.reply({ content: '✅ Status updated.', ephemeral: true });
+    }
+    if (cmd === 'mcount') {
+      const g = interaction.guild, bots = g.members.cache.filter(m => m.user.bot).size;
+      return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`👥 ${g.name}`).addFields({ name: 'Total', value: g.memberCount.toLocaleString(), inline: true }, { name: 'Humans', value: (g.memberCount - bots).toLocaleString(), inline: true }, { name: 'Bots', value: bots.toLocaleString(), inline: true }).setThumbnail(g.iconURL({ dynamic: true })).setTimestamp()] });
+    }
+    if (cmd === 'sinfo') {
+      const g = interaction.guild; await g.fetch();
+      const channels = g.channels.cache;
+      return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(g.name).setThumbnail(g.iconURL({ dynamic: true })).addFields({ name: 'Owner', value: `<@${g.ownerId}>`, inline: true }, { name: 'Members', value: g.memberCount.toLocaleString(), inline: true }, { name: 'Roles', value: g.roles.cache.size.toString(), inline: true }, { name: 'Channels', value: channels.size.toString(), inline: true }, { name: 'Text', value: channels.filter(c => c.type === ChannelType.GuildText).size.toString(), inline: true }, { name: 'Voice', value: channels.filter(c => c.type === ChannelType.GuildVoice).size.toString(), inline: true }, { name: 'Boost Level', value: `${g.premiumTier}`, inline: true }, { name: 'Boosts', value: `${g.premiumSubscriptionCount || 0}`, inline: true }, { name: 'Created', value: `<t:${Math.floor(g.createdTimestamp / 1000)}:R>`, inline: true }).setFooter({ text: `ID: ${g.id}` }).setTimestamp()] });
+    }
+    if (cmd === 'uinfo') {
+      const user = interaction.options.getUser('user') || interaction.user;
+      const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+      const e = new EmbedBuilder().setColor(0x5865f2).setTitle(`${user.username}`).setThumbnail(user.displayAvatarURL({ dynamic: true })).addFields({ name: 'ID', value: user.id, inline: true }, { name: 'Created', value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true }, { name: 'Bot', value: user.bot ? 'Yes' : 'No', inline: true });
+      if (member) e.addFields({ name: 'Joined Server', value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`, inline: true }, { name: 'Nickname', value: member.nickname || 'None', inline: true }, { name: 'Roles', value: member.roles.cache.size > 1 ? member.roles.cache.filter(r => r.id !== interaction.guild.id).map(r => `${r}`).slice(0, 10).join(' ') : 'None' });
+      return interaction.reply({ embeds: [e.setTimestamp()] });
+    }
+    if (cmd === 'av') {
+      const user = interaction.options.getUser('user') || interaction.user;
+      const url = user.displayAvatarURL({ dynamic: true, size: 1024 });
+      return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`${user.username}'s Avatar`).setImage(url).setFooter({ text: `ID: ${user.id}` })] });
+    }
+    if (cmd === 'purge') {
+      if (!hasAllow(interaction.member, 'purge')) return denyAllow(interaction, 'purge');
+      await interaction.deferReply({ ephemeral: true });
+      const amount = interaction.options.getInteger('amt');
+      const filterUser = interaction.options.getUser('user');
+      const botsOnly = interaction.options.getBoolean('bots');
+      const linksOnly = interaction.options.getBoolean('links');
+      const embedsOnly = interaction.options.getBoolean('embeds');
+      const contains = interaction.options.getString('contains');
+      const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+      let msgs = [...(await interaction.channel.messages.fetch({ limit: 100 })).values()];
+      if (filterUser) msgs = msgs.filter(m => m.author.id === filterUser.id);
+      if (botsOnly) msgs = msgs.filter(m => m.author.bot);
+      if (linksOnly) msgs = msgs.filter(m => /(https?:\/\/|discord\.gg\/)/i.test(m.content));
+      if (embedsOnly) msgs = msgs.filter(m => m.embeds.length > 0);
+      if (contains) msgs = msgs.filter(m => m.content.toLowerCase().includes(contains.toLowerCase()));
+      msgs = msgs.filter(m => m.createdTimestamp > cutoff).slice(0, amount);
+      if (!msgs.length) return interaction.editReply({ content: '❌ No eligible messages found (messages >14 days old cannot be bulk-deleted).' });
+      const del = await interaction.channel.bulkDelete(msgs, true);
+      return interaction.editReply({ content: `✅ Deleted **${del.size}** message(s).` });
+    }
+    if (cmd === 'prefix') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const newPrefix = interaction.options.getString('pre');
+      const cfg = readDB('config');
+      cfg.prefix = newPrefix;
+      writeDB('config', cfg);
+      return interaction.reply({ content: `✅ Prefix changed to \`${newPrefix}\``, ephemeral: true });
+    }
+    // ----- WELCOME (short names: set, toggle, test, reset, stat) -----
+    if (cmd === 'welcome') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand(), cfg = readDB('config'); if (!cfg.welcome) cfg.welcome = {};
+      if (sub === 'set') { const s = interaction.options.getString('key'), v = interaction.options.getString('val'); cfg.welcome[s] = v; writeDB('config', cfg); return interaction.reply({ content: `✅ **${s}** = \`${v}\``, ephemeral: true }); }
+      if (sub === 'toggle') { const f = interaction.options.getString('feat'); cfg.welcome[f] = !cfg.welcome[f]; writeDB('config', cfg); return interaction.reply({ content: `✅ **${f}** is now **${cfg.welcome[f] ? 'ON' : 'OFF'}**.`, ephemeral: true }); }
+      if (sub === 'test') { await sendWelcome(interaction.member); return interaction.reply({ content: '✅ Test welcome sent!', ephemeral: true }); }
+      if (sub === 'reset') { cfg.welcome = {}; writeDB('config', cfg); return interaction.reply({ content: '✅ Welcome config reset.', ephemeral: true }); }
+      if (sub === 'stat') { const w = cfg.welcome; return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('👋 Welcome Config').addFields({ name: 'Enabled', value: w.enabled !== false ? '✅' : '❌', inline: true }, { name: 'Embed', value: w.useEmbed !== false ? '✅' : '❌', inline: true }, { name: 'Thumbnail', value: w.thumbnail !== false ? '✅' : '❌', inline: true }, { name: 'DM', value: w.dmEnabled ? '✅' : '❌', inline: true }, { name: 'Channel', value: w.channelId ? `<#${w.channelId}>` : 'Not set', inline: true }, { name: 'Color', value: w.color || '#5865F2', inline: true }, { name: 'Title', value: w.title || '(default)', inline: false }, { name: 'Message', value: w.message || '(default)', inline: false }).setTimestamp()], ephemeral: true }); }
+    }
+    // ----- KEYS (gkey, kinfo, rkey) -----
+    if (cmd === 'gkey') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const dur = interaction.options.getString('dur'), hwidLimit = interaction.options.getInteger('hlim') ?? 1, assign = interaction.options.getUser('asgn');
+      let exp; try { exp = parseDur(dur); } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
+      const key = genKey(), keys = readDB('keys');
+      keys[key] = { key, createdAt: new Date().toISOString(), expiresAt: exp?.toISOString() || null, hwidLimit, hwids: [], assignedTo: assign?.id || null, createdBy: interaction.user.id }; writeDB('keys', keys);
+      await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🔑 Key Generated').addFields({ name: 'Key', value: `\`${key}\`` }, { name: 'Duration', value: dur.toUpperCase(), inline: true }, { name: 'Expires', value: fmtExp(exp), inline: true }, { name: 'HWID Slots', value: `${hwidLimit}`, inline: true }, { name: 'Assigned To', value: assign ? `${assign}` : 'Unassigned', inline: true }).setFooter({ text: 'SRE • Salt Team' }).setTimestamp()], ephemeral: true });
+      if (assign) { try { await assign.send({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🔑 Your License Key').setDescription(`You were assigned a key in **${interaction.guild.name}**.`).addFields({ name: 'Key', value: `\`${key}\`` }, { name: 'Expires', value: fmtExp(exp) }, { name: 'HWID Slots', value: `${hwidLimit}` }).setTimestamp()] }); } catch { } }
+      return;
+    }
+    if (cmd === 'kinfo') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const ks = interaction.options.getString('key'), user = interaction.options.getUser('user'), all = readDB('keys');
+      if (ks) { const d = all[ks.toUpperCase()]; if (!d) return interaction.reply({ content: '❌ Not found.', ephemeral: true }); const exp = keyExp(d); return interaction.reply({ embeds: [new EmbedBuilder().setColor(exp ? 0xff4444 : 0x00d26a).setTitle('🔑 Key Info').addFields({ name: 'Key', value: `\`${d.key}\`` }, { name: 'Status', value: exp ? '❌ Expired' : '✅ Active', inline: true }, { name: 'Expires', value: fmtExp(d.expiresAt), inline: true }, { name: 'HWID Slots', value: `${d.hwids.length}/${d.hwidLimit}`, inline: true }, { name: 'Assigned', value: d.assignedTo ? `<@${d.assignedTo}>` : 'None', inline: true }, { name: 'HWIDs', value: d.hwids.length ? d.hwids.map(h => `\`${h}\``).join('\n') : 'None' }).setTimestamp()], ephemeral: true }); }
+      if (user) { const uk = Object.values(all).filter(k => k.assignedTo === user.id); if (!uk.length) return interaction.reply({ content: `❌ No keys for ${user}.`, ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`Keys — ${user.username}`).setDescription(uk.map(k => `\`${k.key}\` — ${keyExp(k) ? '❌' : '✅'} — ${fmtExp(k.expiresAt)}`).join('\n')).setTimestamp()], ephemeral: true }); }
+      return interaction.reply({ content: '❌ Provide a key or user.', ephemeral: true });
+    }
+    if (cmd === 'rkey') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const ks = interaction.options.getString('key').toUpperCase(), keys = readDB('keys');
+      if (!keys[ks]) return interaction.reply({ content: '❌ Not found.', ephemeral: true });
+      const d = keys[ks]; delete keys[ks]; writeDB('keys', keys);
+      return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🗑️ Key Revoked').addFields({ name: 'Key', value: `\`${ks}\`` }, { name: 'Assigned To', value: d.assignedTo ? `<@${d.assignedTo}>` : 'Unassigned', inline: true }).setTimestamp()], ephemeral: true });
+    }
+    // ----- WHITELIST (wl) and BLACKLIST (bl) -----
+    if (cmd === 'wl') {
+      if (!isMod(interaction.member)) return denyM(interaction);
+      const sub = interaction.options.getSubcommand(), user = interaction.options.getUser('user');
+      const lists = readDB('lists'); if (!lists.whitelist) lists.whitelist = {};
+      if (sub === 'add') {
+        const scope = interaction.options.getString('scope'), word = interaction.options.getString('word')?.toLowerCase().trim(), reason = interaction.options.getString('reason') || 'No reason';
+        if (scope === 'word' && !word) return interaction.reply({ content: '❌ Provide a `word` when scope is "Specific word".', ephemeral: true });
+        const ex = lists.whitelist[user.id] || { scope: 'word', words: [], addedBy: interaction.user.id, reason, addedAt: new Date().toISOString() };
+        if (scope === 'all') ex.scope = 'all'; else { ex.scope = 'word'; if (!ex.words) ex.words = []; if (word && !ex.words.includes(word)) ex.words.push(word); }
+        lists.whitelist[user.id] = ex; writeDB('lists', lists);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('✅ Whitelisted').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Scope', value: scope === 'all' ? 'All words' : `Word: \`${word}\``, inline: true }, { name: 'Reason', value: reason }).setTimestamp()] });
+      }
+      if (sub === 'addw') {
+        const word = interaction.options.getString('word').toLowerCase().trim();
+        if (!lists.whitelist[user.id]) return interaction.reply({ content: `❌ ${user.username} not whitelisted. Use /wl add first.`, ephemeral: true });
+        const wl = lists.whitelist[user.id]; if (!wl.words) wl.words = []; if (!wl.words.includes(word)) { wl.words.push(word); writeDB('lists', lists); }
+        return interaction.reply({ content: `✅ Added \`${word}\` to ${user.username}'s allowed words.`, ephemeral: true });
+      }
+      if (sub === 'rem') { delete lists.whitelist[user.id]; writeDB('lists', lists); return interaction.reply({ content: `✅ ${user} removed from filter whitelist.` }); }
+      if (sub === 'chk') {
+        const wl = lists.whitelist[user.id], bl = (lists.blacklist || {})[user.id];
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(wl ? 0x00d26a : bl ? 0xff4444 : 0x888888).setTitle(`Status: ${user.username}`).addFields({ name: 'Filter Whitelist', value: wl ? `✅ ${wl.scope === 'all' ? 'Exempt from all words' : `Allowed words: ${(wl.words || []).join(', ') || 'none'}`}` : '❌ No' }, { name: 'Blacklist', value: bl ? `🚫 Yes — ${bl.reason}` : '✅ No' }).setTimestamp()], ephemeral: true });
+      }
+      if (sub === 'list') { const entries = Object.entries(lists.whitelist || {}); if (!entries.length) return interaction.reply({ content: '📋 Empty.', ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle(`📋 Filter Whitelist (${entries.length})`).setDescription(entries.map(([id, d]) => `<@${id}> — ${d.scope === 'all' ? 'All words' : `Words: ${(d.words || []).join(', ') || 'none'}`}`).join('\n')).setTimestamp()], ephemeral: true }); }
+    }
+    if (cmd === 'rwl') {
+      if (!isMod(interaction.member)) return denyM(interaction);
+      const user = interaction.options.getUser('user'), word = interaction.options.getString('word')?.toLowerCase().trim();
+      const lists = readDB('lists'); if (!lists.whitelist?.[user.id]) return interaction.reply({ content: `❌ ${user.username} has no whitelist entry.`, ephemeral: true });
+      if (word) { lists.whitelist[user.id].words = (lists.whitelist[user.id].words || []).filter(w => w !== word); writeDB('lists', lists); return interaction.reply({ content: `✅ Removed \`${word}\` from ${user.username}'s allowed words.`, ephemeral: true }); }
+      delete lists.whitelist[user.id]; writeDB('lists', lists);
+      return interaction.reply({ content: `✅ ${user} fully removed from filter whitelist.` });
+    }
+    if (cmd === 'bl') {
+      if (!isMod(interaction.member)) return denyM(interaction);
+      const sub = interaction.options.getSubcommand(), user = interaction.options.getUser('user'), reason = interaction.options.getString('reason') || 'No reason';
+      const lists = readDB('lists'); if (!lists.blacklist) lists.blacklist = {};
+      if (sub === 'add') { lists.blacklist[user.id] = { addedBy: interaction.user.id, reason, addedAt: new Date().toISOString() }; writeDB('lists', lists); if (process.env.BLACKLIST_ROLE_ID) { const m = await interaction.guild.members.fetch(user.id).catch(() => null); if (m) await m.roles.add(process.env.BLACKLIST_ROLE_ID).catch(() => {}); } return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🚫 Blacklisted').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Reason', value: reason }).setTimestamp()] }); }
+      if (sub === 'rem') { delete lists.blacklist[user.id]; writeDB('lists', lists); if (process.env.BLACKLIST_ROLE_ID) { const m = await interaction.guild.members.fetch(user.id).catch(() => null); if (m) await m.roles.remove(process.env.BLACKLIST_ROLE_ID).catch(() => {}); } return interaction.reply({ content: `✅ ${user} removed from blacklist.` }); }
+      if (sub === 'list') { const e = Object.entries(lists.blacklist || {}); if (!e.length) return interaction.reply({ content: '📋 Empty.', ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle(`🚫 Blacklist (${e.length})`).setDescription(e.map(([id, d]) => `<@${id}> — ${d.reason}`).join('\n')).setTimestamp()], ephemeral: true }); }
+    }
+    // ----- ALLOW / REVOKEALLOW (allow / rallow) -----
+    if (cmd === 'allow') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'list') { const db = readDB('allows'); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('🔓 Allows').addFields({ name: 'Users', value: Object.entries(db.users || {}).map(([id, c]) => `<@${id}> — \`${c.join(', ')}\``).join('\n') || 'None' }, { name: 'Roles', value: Object.entries(db.roles || {}).map(([id, c]) => `<@&${id}> — \`${c.join(', ')}\``).join('\n') || 'None' }).setTimestamp()], ephemeral: true }); }
+      const cmds_ = interaction.options.getString('cmds').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      const db = readDB('allows');
+      if (sub === 'user') { const t = interaction.options.getUser('target'); if (!db.users) db.users = {}; db.users[t.id] = [...new Set([...(db.users[t.id] || []), ...cmds_])]; writeDB('allows', db); return interaction.reply({ content: `✅ Granted \`${cmds_.join(', ')}\` to ${t}.`, ephemeral: true }); }
+      if (sub === 'role') { const t = interaction.options.getRole('target'); if (!db.roles) db.roles = {}; db.roles[t.id] = [...new Set([...(db.roles[t.id] || []), ...cmds_])]; writeDB('allows', db); return interaction.reply({ content: `✅ Granted \`${cmds_.join(', ')}\` to ${t}.`, ephemeral: true }); }
+    }
+    if (cmd === 'rallow') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand();
+      const rCmds = (interaction.options.getString('cmds') || 'all').split(',').map(s => s.trim().toLowerCase());
+      const db = readDB('allows');
+      if (sub === 'user') { const t = interaction.options.getUser('target'); if (rCmds.includes('all')) { if (db.users) delete db.users[t.id]; } else if (db.users?.[t.id]) db.users[t.id] = db.users[t.id].filter(c => !rCmds.includes(c)); writeDB('allows', db); return interaction.reply({ content: `✅ Revoked from ${t}.`, ephemeral: true }); }
+      if (sub === 'role') { const t = interaction.options.getRole('target'); if (rCmds.includes('all')) { if (db.roles) delete db.roles[t.id]; } else if (db.roles?.[t.id]) db.roles[t.id] = db.roles[t.id].filter(c => !rCmds.includes(c)); writeDB('allows', db); return interaction.reply({ content: `✅ Revoked from ${t}.`, ephemeral: true }); }
+    }
+    // ----- MODERATION (mod) – all subcommands use short names (ban, sban, tban, unban, kick, mute, unmute, vkick, mvall, warn, strike, warns, cwarns, dwarn, notes, vnotes, slow, lock, unlock, hide, reveal, clone, ldown, uldwn, nick, logs, case) -----
+    if (cmd === 'mod') {
+      if (!hasAllow(interaction.member, 'mod')) return denyAllow(interaction, 'mod');
+      const sub = interaction.options.getSubcommand(), reason = interaction.options.getString('reason') || 'No reason provided';
+      const user = interaction.options.getUser('user');
+      const member = user ? await interaction.guild.members.fetch(user.id).catch(() => null) : null;
+      const logId = readDB('config').antiabuse?.logChannelId || process.env.MOD_LOG_CHANNEL_ID;
+      async function modLog(action, color, fields) { if (!logId) return; const ch = interaction.guild.channels.cache.get(logId); if (!ch) return; await ch.send({ embeds: [new EmbedBuilder().setColor(color).setTitle(`🔨 ${action}`).addFields(...fields, { name: 'Mod', value: `${interaction.user}`, inline: true }).setTimestamp()] }).catch(() => {}); }
+
+      if (sub === 'ban') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        await member.ban({ reason, deleteMessageDays: interaction.options.getInteger('days') ?? 0 });
+        const caseId = logCase(interaction.guildId, 'ban', user.id, interaction.user.id, reason);
+        await trackMod(interaction.guild, interaction.user.id, 'ban');
+        await modLog('User Banned', 0xff4444, [{ name: 'User', value: `${user} (${user.id})`, inline: true }, { name: 'Reason', value: reason }, { name: 'Case', value: `#${caseId}`, inline: true }]);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle(`🔨 Banned — Case #${caseId}`).setDescription(`${user} has been banned.\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'sban') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        const days = interaction.options.getInteger('days') ?? 1;
+        await member.ban({ reason, deleteMessageDays: days });
+        await interaction.guild.members.unban(user.id, `Softban cleared by ${interaction.user.tag}`);
+        const caseId = logCase(interaction.guildId, 'softban', user.id, interaction.user.id, reason);
+        await modLog('User Softbanned', 0xffaa00, [{ name: 'User', value: `${user}`, inline: true }, { name: 'Reason', value: reason }, { name: 'Case', value: `#${caseId}`, inline: true }]);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xffaa00).setTitle(`🔄 Softbanned — Case #${caseId}`).setDescription(`${user} was banned and unbanned (messages cleared).\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'tban') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        const duration = interaction.options.getString('dur');
+        let ms; try { ms = parseTimeToMs(duration); } catch(e) { return interaction.reply({ content: '❌ Invalid duration format. Use e.g. 30m, 2h, 5d, 1w', ephemeral: true }); }
+        if (ms > 28 * 86400000) return interaction.reply({ content: '❌ Tempban cannot exceed 28 days.', ephemeral: true });
+        await member.ban({ reason, deleteMessageDays: interaction.options.getInteger('days') ?? 0 });
+        const caseId = logCase(interaction.guildId, 'tempban', user.id, interaction.user.id, reason, { duration });
+        setTimeout(async () => { try { await interaction.guild.members.unban(user.id, `Tempban expired after ${duration}`); } catch(e) {} }, ms);
+        await modLog('User Tempbanned', 0xff6600, [{ name: 'User', value: `${user}`, inline: true }, { name: 'Duration', value: duration, inline: true }, { name: 'Reason', value: reason }, { name: 'Case', value: `#${caseId}`, inline: true }]);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff6600).setTitle(`⏰ Tempbanned — Case #${caseId}`).setDescription(`${user} has been banned for **${duration}**.\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'unban') {
+        const userId = interaction.options.getString('uid');
+        await interaction.guild.members.unban(userId, reason).catch(e => { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); });
+        const caseId = logCase(interaction.guildId, 'unban', userId, interaction.user.id, reason);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle(`✅ Unbanned — Case #${caseId}`).setDescription(`<@${userId}> has been unbanned.\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'kick') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        await member.kick(reason);
+        const caseId = logCase(interaction.guildId, 'kick', user.id, interaction.user.id, reason);
+        await trackMod(interaction.guild, interaction.user.id, 'kick');
+        await modLog('User Kicked', 0xff8800, [{ name: 'User', value: `${user}`, inline: true }, { name: 'Reason', value: reason }, { name: 'Case', value: `#${caseId}`, inline: true }]);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff8800).setTitle(`👢 Kicked — Case #${caseId}`).setDescription(`${user} kicked.\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'mute') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        const durStr = interaction.options.getString('dur'), m = durStr.match(/^(\d+)(m|h|d)$/i);
+        if (!m) return interaction.reply({ content: '❌ Use: 30m, 1h, 7d', ephemeral: true });
+        const ms = parseInt(m[1]) * (m[2] === 'm' ? 60000 : m[2] === 'h' ? 3600000 : 86400000);
+        if (ms > 28 * 86400000) return interaction.reply({ content: '❌ Max 28 days.', ephemeral: true });
+        await member.timeout(ms, reason);
+        const caseId = logCase(interaction.guildId, 'mute', user.id, interaction.user.id, reason, { duration: durStr });
+        await modLog('User Muted', 0xffcc00, [{ name: 'User', value: `${user}`, inline: true }, { name: 'Duration', value: durStr, inline: true }, { name: 'Reason', value: reason }, { name: 'Case', value: `#${caseId}`, inline: true }]);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xffcc00).setTitle(`🔇 Muted — Case #${caseId}`).addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Duration', value: durStr, inline: true }, { name: 'Reason', value: reason }).setTimestamp()] });
+      }
+      if (sub === 'unmute') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        await member.timeout(null);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🔊 Unmuted').setDescription(`${user} has been unmuted.`).setTimestamp()] });
+      }
+      if (sub === 'vkick') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        if (!member.voice.channel) return interaction.reply({ content: '❌ User is not in a voice channel.', ephemeral: true });
+        await member.voice.disconnect(reason);
+        const caseId = logCase(interaction.guildId, 'voicekick', user.id, interaction.user.id, reason);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff8800).setTitle(`🔊 Voice Kicked — Case #${caseId}`).setDescription(`${user} was removed from voice channel.\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'mvall') {
+        const fromChannel = interaction.options.getChannel('from');
+        const toChannel = interaction.options.getChannel('to');
+        if (fromChannel.type !== ChannelType.GuildVoice || toChannel.type !== ChannelType.GuildVoice) return interaction.reply({ content: '❌ Both channels must be voice channels.', ephemeral: true });
+        const members = fromChannel.members;
+        let moved = 0;
+        for (const [, m] of members) { try { await m.voice.setChannel(toChannel); moved++; } catch(e) {} }
+        return interaction.reply({ content: `✅ Moved **${moved}** members from ${fromChannel} to ${toChannel}.`, ephemeral: true });
+      }
+      if (sub === 'warn') {
+        const warns = readDB('warnings'); if (!warns[user.id]) warns[user.id] = [];
+        const warnId = warns[user.id].length + 1;
+        warns[user.id].push({ id: warnId, reason, by: interaction.user.id, at: new Date().toISOString() }); writeDB('warnings', warns);
+        const caseId = logCase(interaction.guildId, 'warn', user.id, interaction.user.id, reason);
+        try { await user.send({ embeds: [new EmbedBuilder().setColor(0xffcc00).setTitle(`⚠️ Warning — ${interaction.guild.name}`).setDescription(`**Reason:** ${reason}\n\nThis is warning **#${warnId}**.`).setTimestamp()] }); } catch { }
+        await modLog('User Warned', 0xffcc00, [{ name: 'User', value: `${user}`, inline: true }, { name: 'Reason', value: reason }, { name: 'Total Warnings', value: `${warns[user.id].length}`, inline: true }, { name: 'Case', value: `#${caseId}`, inline: true }]);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xffcc00).setTitle(`⚠️ Warned — Case #${caseId}`).addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Reason', value: reason }, { name: 'Total Warnings', value: `${warns[user.id].length}`, inline: true }).setTimestamp()] });
+      }
+      if (sub === 'strike') {
+        const strikes = readDB('strikes'); if (!strikes[user.id]) strikes[user.id] = [];
+        strikes[user.id].push({ reason, by: interaction.user.id, at: new Date().toISOString() });
+        const strikeCount = strikes[user.id].length;
+        writeDB('strikes', strikes);
+        const caseId = logCase(interaction.guildId, 'strike', user.id, interaction.user.id, reason);
+        if (strikeCount >= 3 && member) {
+          await member.timeout(60 * 60 * 1000, '3 strikes - auto mute');
+          return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle(`⚠️ User Muted — 3 Strikes — Case #${caseId}`).setDescription(`${user} received their 3rd strike and has been muted for 1 hour.\n**Latest reason:** ${reason}`).setTimestamp()] });
+        }
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xffcc00).setTitle(`⚠️ Strike #${strikeCount} — Case #${caseId}`).setDescription(`${user} received a strike.\n**Reason:** ${reason}\n**Strikes:** ${strikeCount}/3`).setTimestamp()] });
+      }
+      if (sub === 'warns') {
+        const warns = (readDB('warnings')[user.id]) || [];
+        if (!warns.length) return interaction.reply({ content: `✅ ${user} has no warnings.`, ephemeral: true });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xffcc00).setTitle(`⚠️ Warnings — ${user.username} (${warns.length})`).setDescription(warns.map((w, i) => `**#${w.id || i + 1}** — ${w.reason} — <t:${Math.floor(new Date(w.at).getTime() / 1000)}:R> — by <@${w.by}>`).join('\n')).setTimestamp()], ephemeral: true });
+      }
+      if (sub === 'cwarns') {
+        const warns = readDB('warnings'); delete warns[user.id]; writeDB('warnings', warns);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('✅ Warnings Cleared').setDescription(`All warnings for ${user} cleared.`).setTimestamp()] });
+      }
+      if (sub === 'dwarn') {
+        const idx = interaction.options.getInteger('idx') - 1;
+        const warns = readDB('warnings');
+        if (!warns[user.id]?.[idx]) return interaction.reply({ content: '❌ Warning not found.', ephemeral: true });
+        warns[user.id].splice(idx, 1); writeDB('warnings', warns);
+        return interaction.reply({ content: `✅ Warning #${idx + 1} removed from ${user}.`, ephemeral: true });
+      }
+      if (sub === 'notes') {
+        const notes = readDB('usernotes'); if (!notes[user.id]) notes[user.id] = [];
+        const noteText = interaction.options.getString('note');
+        notes[user.id].push({ note: noteText, by: interaction.user.id, at: new Date().toISOString() });
+        writeDB('usernotes', notes);
+        return interaction.reply({ content: `✅ Note added to ${user}.`, ephemeral: true });
+      }
+      if (sub === 'vnotes') {
+        const notes = (readDB('usernotes')[user.id]) || [];
+        if (!notes.length) return interaction.reply({ content: `📝 No notes for ${user}.`, ephemeral: true });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`📝 Notes — ${user.username}`).setDescription(notes.map((n, i) => `**#${i + 1}** — ${n.note}\n— <@${n.by}>, <t:${Math.floor(new Date(n.at).getTime() / 1000)}:R>`).join('\n\n')).setTimestamp()], ephemeral: true });
+      }
+      if (sub === 'slow') {
+        const secs = interaction.options.getInteger('secs');
+        await interaction.channel.setRateLimitPerUser(secs);
+        return interaction.reply({ content: secs === 0 ? '✅ Slowmode disabled.' : `✅ Slowmode set to **${secs}s**.`, ephemeral: true });
+      }
+      if (sub === 'lock') {
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🔒 Channel Locked').setDescription(`${interaction.channel} is now locked.\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'unlock') {
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🔓 Channel Unlocked').setDescription(`${interaction.channel} is now unlocked.`).setTimestamp()] });
+      }
+      if (sub === 'hide') {
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { ViewChannel: false });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('👻 Channel Hidden').setDescription(`${interaction.channel} is now hidden from @everyone.\n**Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'reveal') {
+        await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { ViewChannel: null });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('👁️ Channel Revealed').setDescription(`${interaction.channel} is now visible to @everyone.`).setTimestamp()] });
+      }
+      if (sub === 'clone') {
+        const newName = interaction.options.getString('name') || `${interaction.channel.name}-clone`;
+        const newChannel = await interaction.channel.clone({ name: newName, reason: `Cloned by ${interaction.user.tag}` });
+        return interaction.reply({ content: `✅ Cloned channel: ${newChannel}`, ephemeral: true });
+      }
+      if (sub === 'ldown') {
+        if (!isAdmin(interaction.member)) return denyA(interaction);
+        await interaction.deferReply();
+        const channels = interaction.guild.channels.cache.filter(c => c.type === ChannelType.GuildText);
+        let locked = 0;
+        for (const [, ch] of channels) { try { await ch.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false }); locked++; } catch { } }
+        return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🔒 SERVER LOCKDOWN').setDescription(`All text channels locked (${locked}). **Reason:** ${reason}`).setTimestamp()] });
+      }
+      if (sub === 'uldwn') {
+        if (!isAdmin(interaction.member)) return denyA(interaction);
+        await interaction.deferReply();
+        const channels = interaction.guild.channels.cache.filter(c => c.type === ChannelType.GuildText);
+        let unlocked = 0;
+        for (const [, ch] of channels) { try { await ch.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null }); unlocked++; } catch { } }
+        return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🔓 Lockdown Lifted').setDescription(`${unlocked} channels unlocked.`).setTimestamp()] });
+      }
+      if (sub === 'nick') {
+        if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        const nick = interaction.options.getString('nick') || null;
+        await member.setNickname(nick, reason);
+        return interaction.reply({ content: `✅ Nickname ${nick ? `set to **${nick}**` : 'reset'} for ${user}.`, ephemeral: true });
+      }
+      if (sub === 'logs') {
+        const cases = (readDB('cases')[interaction.guildId]) || [];
+        const userCases = cases.filter(c => c.userId === user.id);
+        if (!userCases.length) return interaction.reply({ content: `✅ No mod history for ${user}.`, ephemeral: true });
+        const desc = userCases.slice(-15).reverse().map(c => `**Case #${c.id}** — \`${c.action}\` — ${c.reason} — <t:${Math.floor(new Date(c.timestamp).getTime() / 1000)}:R>`).join('\n');
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`📋 Mod History — ${user.username} (${userCases.length} cases)`).setDescription(desc).setTimestamp()], ephemeral: true });
+      }
+      if (sub === 'case') {
+        const id = interaction.options.getInteger('id');
+        const cases = (readDB('cases')[interaction.guildId]) || [];
+        const c = cases.find(x => x.id === id);
+        if (!c) return interaction.reply({ content: `❌ Case #${id} not found.`, ephemeral: true });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`📋 Case #${c.id}`).addFields({ name: 'Action', value: c.action, inline: true }, { name: 'User', value: `<@${c.userId}>`, inline: true }, { name: 'Moderator', value: `<@${c.modId}>`, inline: true }, { name: 'Reason', value: c.reason }, { name: 'Date', value: `<t:${Math.floor(new Date(c.timestamp).getTime() / 1000)}:F>`, inline: true }, ...(c.duration ? [{ name: 'Duration', value: c.duration, inline: true }] : [])).setTimestamp()], ephemeral: true });
+      }
+    }
+    // ----- FILTER (filter / unfilter) -----
+    if (cmd === 'filter') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand(), db = readDB('wordfilter'); if (!db.words) db.words = [];
+      if (sub === 'add') {
+        const w = interaction.options.getString('word').toLowerCase().trim();
+        const action = interaction.options.getString('act') || 'delete';
+        if (!db.words.includes(w)) db.words.push(w);
+        if (!db.wordActions) db.wordActions = {}; db.wordActions[w] = action;
+        writeDB('wordfilter', db);
+        return interaction.reply({ content: `✅ \`${w[0]}${'*'.repeat(Math.max(0, w.length - 2))}${w[w.length - 1] || ''}\` added.\nAction: **${action}**`, ephemeral: true });
+      }
+      if (sub === 'rem') { const w = interaction.options.getString('word').toLowerCase().trim(); db.words = db.words.filter(x => x !== w); if (db.wordActions) delete db.wordActions[w]; writeDB('wordfilter', db); return interaction.reply({ content: '✅ Word removed.', ephemeral: true }); }
+      if (sub === 'list') { if (!db.words.length) return interaction.reply({ content: '📋 Filter is empty.', ephemeral: true }); const censored = db.words.map(w => { const action = db.wordActions?.[w] || 'delete'; return `\`${w[0]}${'*'.repeat(Math.max(0, w.length - 2))}${w[w.length - 1] || ''}\` — ${action}`; }).join('\n'); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`🚫 Filtered Words (${db.words.length})`).setDescription(censored).setTimestamp()], ephemeral: true }); }
+      if (sub === 'abypass') { const en = interaction.options.getBoolean('en'); const cfg = readDB('config'); cfg.antibypass = en; writeDB('config', cfg); return interaction.reply({ content: `✅ Anti-bypass is now **${en ? 'ON' : 'OFF'}**.`, ephemeral: true }); }
+      if (sub === 'logch') { const ch = interaction.options.getChannel('ch'); db.logChannelId = ch.id; writeDB('wordfilter', db); return interaction.reply({ content: `✅ Filter violations logged in ${ch}.`, ephemeral: true }); }
+      if (sub === 'wmsg') { const msg = interaction.options.getString('msg'); db.warnMessage = msg; writeDB('wordfilter', db); return interaction.reply({ content: `✅ Warning message set.`, ephemeral: true }); }
+    }
+    if (cmd === 'unfilter') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const w = interaction.options.getString('word').toLowerCase().trim(), db = readDB('wordfilter');
+      const before = (db.words || []).length; db.words = (db.words || []).filter(x => x !== w); writeDB('wordfilter', db);
+      return interaction.reply({ content: db.words.length === before ? '❌ Word not in filter.' : '✅ Word removed.', ephemeral: true });
+    }
+    // ----- ANTISPAM / ANTIABUSE (aspam / aabuse) -----
+    if (cmd === 'aspam') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand(), cfg = readDB('config'); if (!cfg.antispam) cfg.antispam = {};
+      if (sub === 'en') { cfg.antispam = { enabled: true, threshold: interaction.options.getInteger('thresh') ?? 3, interval: (interaction.options.getInteger('int') ?? 5) * 1000, action: interaction.options.getString('act') || 'delete' }; writeDB('config', cfg); return interaction.reply({ content: `✅ Anti-spam enabled. Threshold: ${cfg.antispam.threshold} msgs in ${cfg.antispam.interval / 1000}s → ${cfg.antispam.action}.`, ephemeral: true }); }
+      if (sub === 'dis') { cfg.antispam.enabled = false; writeDB('config', cfg); return interaction.reply({ content: '✅ Anti-spam disabled.', ephemeral: true }); }
+      if (sub === 'stat') { const s = cfg.antispam; return interaction.reply({ content: `Anti-spam: **${s.enabled ? 'ON' : 'OFF'}** | Threshold: ${s.threshold || 3} | Window: ${(s.interval || 5000) / 1000}s | Action: ${s.action || 'delete'}`, ephemeral: true }); }
+    }
+    if (cmd === 'aabuse') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand(), cfg = readDB('config'); if (!cfg.antiabuse) cfg.antiabuse = {};
+      if (sub === 'en') { cfg.antiabuse = { enabled: true, blockMassPing: interaction.options.getBoolean('ping') ?? true, blockMassBan: interaction.options.getBoolean('ban') ?? true, blockMassKick: interaction.options.getBoolean('kick') ?? true, logChannelId: interaction.options.getString('log') || process.env.MOD_LOG_CHANNEL_ID || null }; writeDB('config', cfg); return interaction.reply({ content: '✅ Anti-abuse enabled.', ephemeral: true }); }
+      if (sub === 'dis') { cfg.antiabuse.enabled = false; writeDB('config', cfg); return interaction.reply({ content: '✅ Anti-abuse disabled.', ephemeral: true }); }
+      if (sub === 'stat') { const a = cfg.antiabuse; return interaction.reply({ content: `Anti-abuse: **${a.enabled ? 'ON' : 'OFF'}** | Pings: ${a.blockMassPing ? '✅' : '❌'} | Bans: ${a.blockMassBan ? '✅' : '❌'} | Kicks: ${a.blockMassKick ? '✅' : '❌'}`, ephemeral: true }); }
+    }
+    // ----- TICKET (ticket) -----
+    if (cmd === 'ticket') {
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'open') { await interaction.deferReply({ ephemeral: true }); const result = await openTicketCh(interaction, interaction.options.getString('reason'), 'general'); if (result) return interaction.editReply({ content: `✅ Ticket created: ${result.ch}` }); return; }
+      if (sub === 'close') { if (!isMod(interaction.member)) return denyM(interaction); return closeTicketCh(interaction); }
+      if (sub === 'add') { const u = interaction.options.getUser('user'); await interaction.channel.permissionOverwrites.create(u, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true }); return interaction.reply({ content: `✅ Added ${u} to the ticket.` }); }
+      if (sub === 'rem') { const u = interaction.options.getUser('user'); await interaction.channel.permissionOverwrites.delete(u); return interaction.reply({ content: `✅ Removed ${u} from the ticket.` }); }
+      if (sub === 'list') {
+        if (!isMod(interaction.member)) return denyM(interaction);
+        const PMAP = { low: '🟢', normal: '🟡', high: '🔴', critical: '🚨' };
+        const open = Object.values(readDB('tickets')).filter(t => t.status === 'open');
+        if (!open.length) return interaction.reply({ content: '📋 No open tickets.', ephemeral: true });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`🎫 Open Tickets (${open.length})`).setDescription(open.map(t => `**#${t.ticketNum}** ${PMAP[t.priority || 'normal']} <#${t.channelId}> — <@${t.userId}> — ${t.type}${t.claimedBy ? ` — ✋ <@${t.claimedBy}>` : ''}`).join('\n')).setTimestamp()], ephemeral: true });
+      }
+      if (sub === 'rename') { if (!isMod(interaction.member)) return denyM(interaction); await interaction.channel.setName(interaction.options.getString('name').toLowerCase().replace(/[^a-z0-9-]/g, '')); return interaction.reply({ content: '✅ Renamed.', ephemeral: true }); }
+      if (sub === 'claim') { if (!isMod(interaction.member)) return denyM(interaction); const t = readDB('tickets')[interaction.channel.id]; if (!t) return interaction.reply({ content: '❌ Not a ticket.', ephemeral: true }); t.claimedBy = interaction.user.id; const all = readDB('tickets'); all[interaction.channel.id] = t; writeDB('tickets', all); return interaction.reply({ content: `✋ Claimed by ${interaction.user}.` }); }
+      if (sub === 'unclaim') { const t = readDB('tickets')[interaction.channel.id]; if (!t) return interaction.reply({ content: '❌ Not a ticket.', ephemeral: true }); t.claimedBy = null; const all = readDB('tickets'); all[interaction.channel.id] = t; writeDB('tickets', all); return interaction.reply({ content: '✅ Unclaimed.' }); }
+      if (sub === 'prio') {
+        if (!isMod(interaction.member)) return denyM(interaction);
+        const level = interaction.options.getString('level');
+        const tickets = readDB('tickets'), t = tickets[interaction.channel.id]; if (!t) return interaction.reply({ content: '❌ Not a ticket.', ephemeral: true });
+        t.priority = level; writeDB('tickets', tickets);
+        const PMAP = { low: '🟢 Low', normal: '🟡 Normal', high: '🔴 High', critical: '🚨 Critical' };
+        return interaction.reply({ content: `✅ Priority set to **${PMAP[level]}**.` });
+      }
+      if (sub === 'note') {
+        if (!isMod(interaction.member)) return denyM(interaction);
+        const text = interaction.options.getString('text');
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xffcc00).setTitle('📝 Staff Note').setDescription(text).setFooter({ text: `Note by ${interaction.user.tag}` }).setTimestamp()] });
+      }
+      if (sub === 'setup') {
+        if (!isAdmin(interaction.member)) return denyA(interaction);
+        const cfg = readDB('config'); if (!cfg.ticket) cfg.ticket = {};
+        cfg.ticket[interaction.options.getString('key')] = interaction.options.getString('val'); writeDB('config', cfg);
+        return interaction.reply({ content: `✅ Ticket setting updated.`, ephemeral: true });
+      }
+    }
+    // ----- PANEL (panel) -----
+    if (cmd === 'panel') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand();
+      const cfg = readDB('config'); if (!cfg.panel) cfg.panel = { types: [] };
+
+      if (sub === 'setup') { cfg.panel[interaction.options.getString('key')] = interaction.options.getString('val'); writeDB('config', cfg); return interaction.reply({ content: '✅ Panel setting updated.', ephemeral: true }); }
+      if (sub === 'addtype') {
+        const id = interaction.options.getString('id').toLowerCase().replace(/\s/g, '_');
+        cfg.panel.types = (cfg.panel.types || []).filter(t => t.id !== id);
+        cfg.panel.types.push({ id, label: interaction.options.getString('label'), emoji: interaction.options.getString('emoji'), style: interaction.options.getString('style') || 'Primary' });
+        writeDB('config', cfg); return interaction.reply({ content: `✅ Ticket type \`${id}\` added.`, ephemeral: true });
+      }
+      if (sub === 'rmtype') { const id = interaction.options.getString('id'); cfg.panel.types = (cfg.panel.types || []).filter(t => t.id !== id); writeDB('config', cfg); return interaction.reply({ content: `✅ Type \`${id}\` removed.`, ephemeral: true }); }
+      if (sub === 'types') { const types = cfg.panel?.types || []; if (!types.length) return interaction.reply({ content: '📋 No ticket types. Use `/panel addtype`.', ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('🎫 Ticket Types').setDescription(types.map(t => `${t.emoji} **${t.label}** — ID: \`${t.id}\` — Style: ${t.style}`).join('\n')).setTimestamp()], ephemeral: true }); }
+
+      function buildPanelEmbed(pCfg) {
+        const color = pCfg.color ? parseInt(pCfg.color.replace('#', ''), 16) : 0x5865f2;
+        const types = pCfg.types || [];
+        const e = new EmbedBuilder().setColor(color).setTitle(pCfg.title || '🎫 Open a Support Ticket').setDescription((pCfg.description || 'Click a button below to open a ticket.\n\n' + types.map(t => `${t.emoji} **${t.label}**`).join('\n')).replace(/\\n/g, '\n')).setFooter({ text: pCfg.footer || `${interaction.guild.name} • Support` }).setTimestamp();
+        if (pCfg.image) e.setImage(pCfg.image); if (pCfg.thumbnail) e.setThumbnail(pCfg.thumbnail);
+        return e;
+      }
+      function buildPanelRows(types) {
+        const rows = []; const styleMap = { Primary: ButtonStyle.Primary, Success: ButtonStyle.Success, Danger: ButtonStyle.Danger, Secondary: ButtonStyle.Secondary };
+        for (let i = 0; i < types.length; i += 5) { const row = new ActionRowBuilder(); for (const t of types.slice(i, i + 5)) row.addComponents(new ButtonBuilder().setCustomId(`panel_ticket_${t.id}`).setLabel(t.label).setStyle(styleMap[t.style] || ButtonStyle.Primary).setEmoji(t.emoji)); rows.push(row); }
+        return rows;
+      }
+
+      if (sub === 'prev') {
+        const types = cfg.panel.types || []; if (!types.length) return interaction.reply({ content: '❌ No ticket types configured.', ephemeral: true });
+        return interaction.reply({ content: '**Preview:**', embeds: [buildPanelEmbed(cfg.panel)], components: buildPanelRows(types), ephemeral: true });
+      }
+      if (sub === 'send') {
+        const types = cfg.panel.types || []; if (!types.length) return interaction.reply({ content: '❌ No ticket types configured. Add some with `/panel addtype` first.', ephemeral: true });
+        const ch = interaction.options.getChannel('ch') || interaction.channel;
+        await ch.send({ embeds: [buildPanelEmbed(cfg.panel)], components: buildPanelRows(types) });
+        return interaction.reply({ content: `✅ Panel sent in ${ch}!`, ephemeral: true });
+      }
+    }
+    // ----- ROBLOX (rbx) -----
+    if (cmd === 'rbx') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand();
+      const cfg = readDB('config'); if (!cfg.roblox) cfg.roblox = {};
+
+      if (sub === 'setup') {
+        const setting = interaction.options.getString('key');
+        const value = interaction.options.getString('val');
+        const validSettings = ['channelId', 'pingRoleId', 'title', 'color', 'footer', 'thumb', 'dlUrl', 'liveMsg', 'patchNote'];
+        if (validSettings.includes(setting)) {
+          cfg.roblox[setting === 'thumb' ? 'thumbnail' : setting === 'dlUrl' ? 'downloadUrl' : setting === 'liveMsg' ? 'liveMessage' : setting] = value;
+          writeDB('config', cfg);
+          return interaction.reply({ content: `✅ Roblox config updated: **${setting}** = \`${value}\``, ephemeral: true });
+        } else {
+          return interaction.reply({ content: `❌ Unknown setting. Valid: ${validSettings.join(', ')}`, ephemeral: true });
+        }
+      }
+
+      if (sub === 'stat') {
+        const r = cfg.roblox;
+        return interaction.reply({
+          embeds: [new EmbedBuilder().setColor(0xff6600).setTitle('🎮 Roblox Updater Config')
+            .addFields(
+              { name: 'Channel', value: r.channelId ? `<#${r.channelId}>` : `<#${ROBLOX_CHAN_ID}> (default)`, inline: true },
+              { name: 'Ping Role', value: r.pingRoleId ? `<@&${r.pingRoleId}>` : 'None', inline: true },
+              { name: 'Live Message', value: r.liveMessage || 'Live update detected!', inline: true },
+              { name: 'Patch Note', value: r.patchNote || 'Salt is patched.', inline: true },
+              { name: 'Embed Title', value: r.title || 'ROBLOX Update Detected', inline: false },
+              { name: 'Footer', value: r.footer || 'Source: whatexpsare.online • SRE Bot', inline: false }
+            ).setTimestamp()], ephemeral: true
+        });
+      }
+
+      if (sub === 'test') {
+        const chId = cfg.roblox.channelId || ROBLOX_CHAN_ID;
+        const ch = interaction.guild.channels.cache.get(chId);
+        if (!ch) return interaction.reply({ content: '❌ Channel not found.', ephemeral: true });
+        const testData = {
+          versionHash: 'version-a182ba0d4c6f483b',
+          platform: 'Windows',
+          timestamp: Date.now(),
+          downloadNumbers: '18 5 4 6 5 3',
+          downloadUrl: 'https://setup.rbxcdn.com/version-a182ba0d4c6f483b/RobloxPlayerLauncher.exe',
+          liveMsg: cfg.roblox.liveMessage || 'Live update detected!',
+          patchNote: cfg.roblox.patchNote || 'Salt is patched.'
+        };
+        await sendRobloxUpdate(client, testData);
+        return interaction.reply({ content: `✅ Test notification sent to ${ch}.`, ephemeral: true });
+      }
+
+      if (sub === 'check') {
+        await interaction.deferReply({ ephemeral: true });
+        await checkRoblox(client);
+        return interaction.editReply({ content: '✅ Roblox sites checked. If updates were found they were posted.' });
+      }
+    }
+    // ----- ROLE (role) -----
+    if (cmd === 'role') {
+      if (!hasAllow(interaction.member, 'role')) return denyAllow(interaction, 'role');
+      const sub = interaction.options.getSubcommand(), role = interaction.options.getRole('role');
+      if (sub === 'add' || sub === 'rem') {
+        if (!isMod(interaction.member)) return denyM(interaction);
+        const user = interaction.options.getUser('user'), reason = interaction.options.getString('reason') || 'No reason';
+        const member = await interaction.guild.members.fetch(user.id).catch(() => null); if (!member) return interaction.reply({ content: '❌ Member not found.', ephemeral: true });
+        if (role.managed) return interaction.reply({ content: '❌ Cannot manage bot-managed roles.', ephemeral: true });
+        if (sub === 'add') { await member.roles.add(role, reason); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('✅ Role Added').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Role', value: `${role}`, inline: true }, { name: 'Reason', value: reason }).setTimestamp()] }); }
+        await member.roles.remove(role, reason); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('✅ Role Removed').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Role', value: `${role}`, inline: true }).setTimestamp()] });
+      }
+      if (sub === 'all' || sub === 'rmall') {
+        if (!isAdmin(interaction.member)) return denyA(interaction); if (role.managed) return interaction.reply({ content: '❌ Bot-managed roles.', ephemeral: true });
+        await interaction.deferReply(); await interaction.guild.members.fetch(); const members = interaction.guild.members.cache.filter(m => !m.user.bot); let ok = 0, fail = 0;
+        for (const [, m] of members) { try { sub === 'all' ? await m.roles.add(role) : await m.roles.remove(role); ok++; } catch { fail++; } await new Promise(r => setTimeout(r, 100)); }
+        return interaction.editReply({ embeds: [new EmbedBuilder().setColor(sub === 'all' ? 0x00d26a : 0xff4444).setTitle(sub === 'all' ? '✅ Role Given to All' : '✅ Role Removed from All').addFields({ name: 'Role', value: `${role}`, inline: true }, { name: '✅', value: `${ok}`, inline: true }, { name: '❌', value: `${fail}`, inline: true }).setTimestamp()] });
+      }
+      if (sub === 'info') { const count = interaction.guild.members.cache.filter(m => m.roles.cache.has(role.id)).size; return interaction.reply({ embeds: [new EmbedBuilder().setColor(role.color || 0x5865f2).setTitle(`🎭 ${role.name}`).addFields({ name: 'ID', value: role.id, inline: true }, { name: 'Color', value: `#${role.color.toString(16).padStart(6, '0')}`, inline: true }, { name: 'Position', value: `${role.position}`, inline: true }, { name: 'Members', value: `${count}`, inline: true }, { name: 'Hoisted', value: role.hoist ? '✅' : '❌', inline: true }, { name: 'Mentionable', value: role.mentionable ? '✅' : '❌', inline: true }, { name: 'Created', value: `<t:${Math.floor(role.createdTimestamp / 1000)}:R>`, inline: true }).setTimestamp()], ephemeral: true }); }
+      if (sub === 'create') { if (!isAdmin(interaction.member)) return denyA(interaction); const name = interaction.options.getString('name'), cStr = interaction.options.getString('col'), hoist = interaction.options.getBoolean('hoist') ?? false, mentionable = interaction.options.getBoolean('ment') ?? false; let color = 0; try { if (cStr) color = parseInt(cStr.replace('#', ''), 16); } catch { } const nr = await interaction.guild.roles.create({ name, color, hoist, mentionable, reason: `Created by ${interaction.user.tag}` }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(color || 0x00d26a).setTitle('✅ Role Created').addFields({ name: 'Name', value: nr.name, inline: true }, { name: 'ID', value: nr.id, inline: true }).setTimestamp()] }); }
+      if (sub === 'delete') { if (!isAdmin(interaction.member)) return denyA(interaction); if (role.managed) return interaction.reply({ content: '❌ Cannot delete bot-managed roles.', ephemeral: true }); await role.delete(`Deleted by ${interaction.user.tag}`); return interaction.reply({ content: `✅ Role **${role.name}** deleted.` }); }
+      if (sub === 'edit') { if (!isAdmin(interaction.member)) return denyA(interaction); const opts = {}; const n = interaction.options.getString('name'), c = interaction.options.getString('col'), h = interaction.options.getBoolean('hoist'), m = interaction.options.getBoolean('ment'); if (n) opts.name = n; if (c) { try { opts.color = parseInt(c.replace('#', ''), 16); } catch { } } if (h !== null) opts.hoist = h; if (m !== null) opts.mentionable = m; await role.edit(opts); return interaction.reply({ content: `✅ Role **${role.name}** updated.`, ephemeral: true }); }
+      if (sub === 'list') { const roles = [...interaction.guild.roles.cache.values()].filter(r => r.id !== interaction.guild.id).sort((a, b) => b.position - a.position); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`🎭 Roles (${roles.length})`).setDescription(roles.slice(0, 30).map(r => `${r} — ${interaction.guild.members.cache.filter(m => m.roles.cache.has(r.id)).size} members`).join('\n') || 'None').setTimestamp()], ephemeral: true }); }
+      if (sub === 'members') { const members = interaction.guild.members.cache.filter(m => m.roles.cache.has(role.id) && !m.user.bot); if (!members.size) return interaction.reply({ content: `❌ No members with ${role}.`, ephemeral: true }); const desc = members.first(30).map(m => m.user.tag).join('\n') + (members.size > 30 ? `\n+${members.size - 30} more` : ''); return interaction.reply({ embeds: [new EmbedBuilder().setColor(role.color || 0x5865f2).setTitle(`🎭 ${role.name} Members (${members.size})`).setDescription(desc).setTimestamp()], ephemeral: true }); }
+    }
+    // ----- AUTOROLE (autorole) -----
+    if (cmd === 'autorole') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand(), cfg = readDB('config'); if (!cfg.autoroles) cfg.autoroles = [];
+      if (sub === 'add') { const r = interaction.options.getRole('role'); if (r.managed) return interaction.reply({ content: '❌ Cannot auto-assign bot-managed roles.', ephemeral: true }); if (!cfg.autoroles.includes(r.id)) { cfg.autoroles.push(r.id); writeDB('config', cfg); } return interaction.reply({ content: `✅ ${r} will be auto-assigned to new members.` }); }
+      if (sub === 'rem') { const r = interaction.options.getRole('role'); cfg.autoroles = cfg.autoroles.filter(id => id !== r.id); writeDB('config', cfg); return interaction.reply({ content: `✅ ${r} removed.` }); }
+      if (sub === 'list') { if (!cfg.autoroles.length) return interaction.reply({ content: '📋 No autoroles set.', ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`🎭 Autoroles (${cfg.autoroles.length})`).setDescription(cfg.autoroles.map(id => `<@&${id}>`).join('\n')).setTimestamp()] }); }
+      if (sub === 'clear') { cfg.autoroles = []; writeDB('config', cfg); return interaction.reply({ content: '✅ All autoroles cleared.', ephemeral: true }); }
+    }
+    // ----- BACKUP (backup) & LOAD (load) -----
+    if (cmd === 'backup') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'create') {
+        await interaction.deferReply({ ephemeral: true });
+        const g = interaction.guild;
+        const roles = g.roles.cache.filter(r => r.id !== g.id).sort((a, b) => b.position - a.position).map(r => ({ name: r.name, color: r.color, hoist: r.hoist, mentionable: r.mentionable, permissions: r.permissions.bitfield.toString(), position: r.position }));
+        const channels = g.channels.cache.map(c => ({ name: c.name, type: c.type, parentName: c.parent?.name || null, position: c.position, topic: c.topic || null, nsfw: c.nsfw || false, rateLimitPerUser: c.rateLimitPerUser || 0, bitrate: c.bitrate || null, userLimit: c.userLimit || null }));
+        const id = `backup_${Date.now()}`; const backups = readDB('backups');
+        backups[id] = { id, guildName: g.name, createdAt: new Date().toISOString(), createdBy: interaction.user.id, memberCount: g.memberCount, roles, channels }; writeDB('backups', backups);
+        return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('💾 Backup Created').addFields({ name: 'ID', value: `\`${id}\`` }, { name: 'Channels', value: `${channels.length}`, inline: true }, { name: 'Roles', value: `${roles.length}`, inline: true }).setFooter({ text: 'Use /load to restore.' }).setTimestamp()] });
+      }
+      if (sub === 'list') { const list = Object.values(readDB('backups')); if (!list.length) return interaction.reply({ content: '📋 No backups.', ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`💾 Backups (${list.length})`).setDescription(list.map(b => `\`${b.id}\` — **${b.guildName}** — <t:${Math.floor(new Date(b.createdAt).getTime() / 1000)}:R>`).join('\n')).setTimestamp()], ephemeral: true }); }
+      if (sub === 'info') { const b = readDB('backups')[interaction.options.getString('id')]; if (!b) return interaction.reply({ content: '❌ Not found.', ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`💾 ${b.guildName}`).addFields({ name: 'ID', value: `\`${b.id}\`` }, { name: 'Channels', value: `${b.channels.length}`, inline: true }, { name: 'Roles', value: `${b.roles.length}`, inline: true }, { name: 'Created', value: `<t:${Math.floor(new Date(b.createdAt).getTime() / 1000)}:F>`, inline: true }).setTimestamp()], ephemeral: true }); }
+      if (sub === 'delete') { const id = interaction.options.getString('id'); const backups = readDB('backups'); if (!backups[id]) return interaction.reply({ content: '❌ Not found.', ephemeral: true }); delete backups[id]; writeDB('backups', backups); return interaction.reply({ content: `✅ Backup deleted.`, ephemeral: true }); }
+    }
+    if (cmd === 'load') {
+      if (!isAdmin(interaction.member)) return denyA(interaction);
+      await interaction.deferReply({ ephemeral: true });
+      const id = interaction.options.getString('id'), mode = interaction.options.getString('mode'), backup = readDB('backups')[id];
+      if (!backup) return interaction.editReply({ content: '❌ Backup not found.' });
+      const g = interaction.guild; let ok = 0, fail = 0;
+      if (mode === 'roles' || mode === 'all') { const existing = g.roles.cache.map(r => r.name.toLowerCase()); for (const r of backup.roles) { if (r.name === '@everyone' || existing.includes(r.name.toLowerCase())) continue; try { await g.roles.create({ name: r.name, color: r.color, hoist: r.hoist, mentionable: r.mentionable, permissions: BigInt(r.permissions), reason: `Restored from ${id}` }); ok++; } catch { fail++; } } }
+      if (mode === 'channels' || mode === 'all') { const catMap = new Map(); for (const cat of backup.channels.filter(c => c.type === ChannelType.GuildCategory)) { const ex = g.channels.cache.find(c => c.name === cat.name && c.type === ChannelType.GuildCategory); if (ex) { catMap.set(cat.name, ex); continue; } try { const c = await g.channels.create({ name: cat.name, type: ChannelType.GuildCategory, reason: `Restored from ${id}` }); catMap.set(cat.name, c); ok++; } catch { fail++; } } for (const ch of backup.channels.filter(c => c.type !== ChannelType.GuildCategory)) { if (g.channels.cache.find(c => c.name === ch.name && c.type === ch.type)) continue; try { const opts = { name: ch.name, type: ch.type, parent: catMap.get(ch.parentName)?.id || null, position: ch.position, reason: `Restored from ${id}` }; if (ch.type === ChannelType.GuildText) { opts.topic = ch.topic; opts.nsfw = ch.nsfw; opts.rateLimitPerUser = ch.rateLimitPerUser; } if (ch.type === ChannelType.GuildVoice) { opts.bitrate = ch.bitrate; opts.userLimit = ch.userLimit; } await g.channels.create(opts); ok++; } catch { fail++; } } }
+      return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('📥 Backup Loaded').addFields({ name: 'ID', value: `\`${id}\`` }, { name: '✅ Restored', value: `${ok}`, inline: true }, { name: '❌ Failed', value: `${fail}`, inline: true }, { name: 'Note', value: 'Existing items were skipped.' }).setTimestamp()] });
+    }
+    // ----- GIVEAWAY (giveaway) -----
+    if (cmd === 'giveaway') {
+      if (!isMod(interaction.member)) return denyM(interaction);
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'start') {
+        const prize = interaction.options.getString('prize'), durStr = interaction.options.getString('dur'), winners = interaction.options.getInteger('winners') ?? 1, req = interaction.options.getString('req'), ch = interaction.options.getChannel('ch') || interaction.channel;
+        let ms; try { ms = parseGwDur(durStr); } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
+        const endsAt = new Date(Date.now() + ms);
+        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('giveaway_enter').setLabel('Enter').setStyle(ButtonStyle.Primary).setEmoji('🎉'));
+        const msg = await ch.send({ embeds: [new EmbedBuilder().setTitle('🎉 GIVEAWAY 🎉').setColor(0xff73fa).addFields({ name: 'Prize', value: `**${prize}**` }, { name: 'Winners', value: `${winners}`, inline: true }, { name: 'Ends', value: `<t:${Math.floor(endsAt.getTime() / 1000)}:R>`, inline: true }, { name: 'Hosted By', value: `${interaction.user}`, inline: true }, ...(req ? [{ name: 'Requirement', value: req }] : []), { name: 'Entries', value: '0', inline: true }).setFooter({ text: 'Click 🎉 to enter!' }).setTimestamp(endsAt)], components: [row] });
+        const gw = readDB('giveaways'); gw[msg.id] = { messageId: msg.id, channelId: ch.id, guildId: interaction.guildId, prize, winnersCount: winners, requirement: req || null, hostedBy: interaction.user.id, endsAt: endsAt.toISOString(), entries: [], ended: false }; writeDB('giveaways', gw);
+        setTimeout(() => endGiveaway(client, msg.id), ms);
+        return interaction.reply({ content: `✅ Giveaway started in ${ch}!`, ephemeral: true });
+      }
+      if (sub === 'end') { await endGiveaway(client, interaction.options.getString('mid')); return interaction.reply({ content: '✅ Ended.', ephemeral: true }); }
+      if (sub === 'reroll') { const g = readDB('giveaways')[interaction.options.getString('mid')]; if (!g?.ended) return interaction.reply({ content: '❌ Not found or not ended.', ephemeral: true }); const w = pickWinners(g.entries, g.winnersCount); const ch = await interaction.guild.channels.fetch(g.channelId).catch(() => null); if (ch) await ch.send({ embeds: [new EmbedBuilder().setColor(0xff73fa).setTitle('🎉 Rerolled!').setDescription(`New winner(s): ${w.map(id => `<@${id}>`).join(', ')}\n**Prize:** ${g.prize}`).setTimestamp()] }); return interaction.reply({ content: '✅ Rerolled!', ephemeral: true }); }
+      if (sub === 'list') { const active = Object.values(readDB('giveaways')).filter(g => !g.ended); if (!active.length) return interaction.reply({ content: '📋 No active giveaways.', ephemeral: true }); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff73fa).setTitle(`🎉 Active Giveaways (${active.length})`).setDescription(active.map(g => `**${g.prize}** — <#${g.channelId}> — ends <t:${Math.floor(new Date(g.endsAt).getTime() / 1000)}:R>`).join('\n')).setTimestamp()], ephemeral: true }); }
+    }
+    // ----- SCRIPT (script) -----
+    if (cmd === 'script') {
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'submit') { const subCh = process.env.SCRIPT_SUBMIT_CHANNEL_ID && interaction.guild.channels.cache.get(process.env.SCRIPT_SUBMIT_CHANNEL_ID); if (!subCh) return interaction.reply({ content: '❌ No submission channel (set SCRIPT_SUBMIT_CHANNEL_ID in .env).', ephemeral: true }); const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('script_approve').setLabel('Approve').setStyle(ButtonStyle.Success).setEmoji('✅'), new ButtonBuilder().setCustomId('script_deny').setLabel('Deny').setStyle(ButtonStyle.Danger).setEmoji('❌')); await subCh.send({ embeds: [new EmbedBuilder().setColor(0xffcc00).setTitle(`📜 ${interaction.options.getString('title')}`).addFields({ name: 'By', value: `${interaction.user}`, inline: true }, { name: 'Description', value: interaction.options.getString('desc') }, { name: 'Link', value: interaction.options.getString('link') }, { name: 'Status', value: '⏳ Pending' }).setTimestamp()], components: [row] }); return interaction.reply({ content: '✅ Submitted for review!', ephemeral: true }); }
+      if (sub === 'approve' || sub === 'deny') { if (!isMod(interaction.member)) return denyM(interaction); const ch = interaction.guild.channels.cache.get(process.env.SCRIPT_SUBMIT_CHANNEL_ID || ''); if (!ch) return interaction.reply({ content: '❌ Channel not found.', ephemeral: true }); const msg = await ch.messages.fetch(interaction.options.getString('mid')).catch(() => null); if (!msg?.embeds[0]) return interaction.reply({ content: '❌ Not found.', ephemeral: true }); const ap = sub === 'approve', notes = interaction.options.getString('notes') || interaction.options.getString('reason') || 'N/A'; const upd = EmbedBuilder.from(msg.embeds[0]).setColor(ap ? 0x00d26a : 0xff4444).spliceFields(msg.embeds[0].fields.findIndex(f => f.name === 'Status'), 1, { name: 'Status', value: ap ? '✅ Approved' : '❌ Denied' }, { name: ap ? 'Notes' : 'Reason', value: notes }, { name: 'Reviewed By', value: `${interaction.user}` }); await msg.edit({ embeds: [upd], components: [] }); return interaction.reply({ content: `${ap ? '✅ Approved' : '❌ Denied'}.`, ephemeral: true }); }
+    }
+    // ----- ECONOMY (eco) -----
+    if (cmd === 'eco') {
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'bal') { const target = interaction.options.getUser('user') || interaction.user; const e = getEcon(target.id); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`💰 ${target.username}'s Balance`).addFields({ name: 'Wallet', value: fmtC(e.coins), inline: true }, { name: 'Bank', value: fmtC(e.bank), inline: true }, { name: 'Net Worth', value: fmtC(e.coins + e.bank), inline: true }).setThumbnail(target.displayAvatarURL({ dynamic: true })).setTimestamp()] }); }
+      if (sub === 'daily') { const e = getEcon(interaction.user.id); const now = Date.now(), cd = DAILY_CD - (now - e.lastDaily); if (cd > 0) return interaction.reply({ content: `⏰ Daily on cooldown — **${cdFmt(cd)}** remaining.`, ephemeral: true }); const streak = ((now - e.lastDaily) < DAILY_CD * 2) ? ((e.streak || 0) + 1) : 1; const reward = 200 + Math.min(streak * 25, 500); e.coins += reward; e.lastDaily = now; e.streak = streak; setEcon(interaction.user.id, e); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle('📅 Daily Claimed!').addFields({ name: 'Reward', value: fmtC(reward), inline: true }, { name: 'Streak', value: `🔥 ${streak} day(s)`, inline: true }, { name: 'Balance', value: fmtC(e.coins), inline: true })] }); }
+      if (sub === 'work') { const e = getEcon(interaction.user.id); const cd = WORK_CD - (Date.now() - e.lastWork); if (cd > 0) return interaction.reply({ content: `⏰ Work on cooldown — **${cdFmt(cd)}** remaining.`, ephemeral: true }); const reward = Math.floor(Math.random() * 150) + 50; e.coins += reward; e.lastWork = Date.now(); setEcon(interaction.user.id, e); const job = WORK_LINES[Math.floor(Math.random() * WORK_LINES.length)]; return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('💼 Work Complete').setDescription(`You ${job} and earned ${fmtC(reward)}!`).addFields({ name: 'Balance', value: fmtC(e.coins), inline: true })] }); }
+      if (sub === 'crime') { const e = getEcon(interaction.user.id); const cd = CRIME_CD - (Date.now() - e.lastCrime); if (cd > 0) return interaction.reply({ content: `⏰ Crime on cooldown — **${cdFmt(cd)}** remaining.`, ephemeral: true }); e.lastCrime = Date.now(); setEcon(interaction.user.id, e); const hasLaptop = (e.inventory?.laptop || 0) > 0; const fail = Math.random() < (hasLaptop ? 0.25 : 0.40); if (fail) { const fine = Math.floor(Math.random() * 100) + 50; addCoins(interaction.user.id, -fine); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🚔 Crime Failed!').setDescription(`${CRIME_FAIL[Math.floor(Math.random() * CRIME_FAIL.length)]} ${fmtC(fine)}.`).addFields({ name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); } const crime = CRIME_LIST[Math.floor(Math.random() * CRIME_LIST.length)]; const reward = Math.floor((crime.min + Math.random() * (crime.max - crime.min)) * (hasLaptop ? 1.3 : 1)); addCoins(interaction.user.id, reward); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff8800).setTitle('🦹 Crime Successful!').setDescription(`${crime.m} — earned ${fmtC(reward)}!${hasLaptop ? ' *(+30% laptop bonus)*' : ''}`).addFields({ name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      if (sub === 'fish' || sub === 'hunt' || sub === 'mine') { const imap = { fish: 'fishingrod', hunt: 'rifle', mine: 'pickaxe' }, table = sub === 'fish' ? FISH : sub === 'hunt' ? HUNT : MINE, req = imap[sub], e = getEcon(interaction.user.id); if (!(e.inventory?.[req] > 0)) return interaction.reply({ content: `❌ You need a **${SHOP[req].name}** to ${sub}. Buy from \`/eco shop\`.`, ephemeral: true }); const caught = wPick(table); addCoins(interaction.user.id, caught.v); const emojis = { fish: '🎣', hunt: '🔫', mine: '⛏️' }; return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x3498db).setTitle(`${emojis[sub]} ${sub.charAt(0).toUpperCase() + sub.slice(1)} Result`).addFields({ name: 'Caught', value: caught.n, inline: true }, { name: 'Value', value: fmtC(caught.v), inline: true }, { name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      if (sub === 'dep') { const e = getEcon(interaction.user.id); let amount = interaction.options.getInteger('amt'); if (amount === 0) amount = e.coins; if (amount > e.coins) return interaction.reply({ content: `❌ You only have ${fmtC(e.coins)}.`, ephemeral: true }); e.coins -= amount; e.bank += amount; setEcon(interaction.user.id, e); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🏦 Deposit').addFields({ name: 'Deposited', value: fmtC(amount), inline: true }, { name: 'Bank', value: fmtC(e.bank), inline: true }, { name: 'Wallet', value: fmtC(e.coins), inline: true })] }); }
+      if (sub === 'with') { const e = getEcon(interaction.user.id); let amount = interaction.options.getInteger('amt'); if (amount === 0) amount = e.bank; if (amount > e.bank) return interaction.reply({ content: `❌ You only have ${fmtC(e.bank)} in bank.`, ephemeral: true }); e.bank -= amount; e.coins += amount; setEcon(interaction.user.id, e); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🏦 Withdrawal').addFields({ name: 'Withdrawn', value: fmtC(amount), inline: true }, { name: 'Wallet', value: fmtC(e.coins), inline: true }, { name: 'Bank', value: fmtC(e.bank), inline: true })] }); }
+      if (sub === 'give') { const target = interaction.options.getUser('user'), amount = interaction.options.getInteger('amt'); if (target.id === interaction.user.id) return interaction.reply({ content: '❌ Cannot give to yourself.', ephemeral: true }); const e = getEcon(interaction.user.id); if (e.coins < amount) return interaction.reply({ content: `❌ You only have ${fmtC(e.coins)}.`, ephemeral: true }); addCoins(interaction.user.id, -amount); addCoins(target.id, amount); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('💸 Sent').addFields({ name: 'To', value: `${target}`, inline: true }, { name: 'Amount', value: fmtC(amount), inline: true }, { name: 'Your Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      if (sub === 'lb') { const all = readDB('economy'); const sorted = Object.entries(all).sort(([, a], [, b]) => (b.coins + b.bank) - (a.coins + a.bank)).slice(0, 10); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle('💰 Leaderboard — Top 10').setDescription(sorted.map(([id, e], i) => `**${i + 1}.** <@${id}> — ${fmtC(e.coins + e.bank)}`).join('\n') || 'No data.').setTimestamp()] }); }
+      if (sub === 'shop') { return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle('🛒 Item Shop').setDescription(Object.entries(SHOP).map(([id, i]) => `**${i.name}** — ${fmtC(i.price)}\nID: \`${id}\` • ${i.desc}`).join('\n\n')).setFooter({ text: 'Use /eco buy <id> to purchase.' }).setTimestamp()] }); }
+      if (sub === 'buy') { const itemId = interaction.options.getString('item'), item = SHOP[itemId]; if (!item) return interaction.reply({ content: '❌ Item not found.', ephemeral: true }); const e = getEcon(interaction.user.id); if (e.coins < item.price) return interaction.reply({ content: `❌ Need ${fmtC(item.price)}, you have ${fmtC(e.coins)}.`, ephemeral: true }); e.coins -= item.price; if (!e.inventory) e.inventory = {}; e.inventory[itemId] = (e.inventory[itemId] || 0) + 1; setEcon(interaction.user.id, e); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('✅ Purchased!').addFields({ name: 'Item', value: item.name, inline: true }, { name: 'Price', value: fmtC(item.price), inline: true }, { name: 'Balance', value: fmtC(e.coins), inline: true })] }); }
+      if (sub === 'inv') { const target = interaction.options.getUser('user') || interaction.user; const e = getEcon(target.id); const inv = e.inventory || {}; const items = Object.entries(inv).filter(([, q]) => q > 0).map(([id, q]) => `${SHOP[id]?.name || id} ×${q}`).join('\n'); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`🎒 ${target.username}'s Inventory`).setDescription(items || 'Empty.').setTimestamp()] }); }
+    }
+    // ----- GAMBLE (gamble) -----
+    if (cmd === 'gamble') {
+      const sub = interaction.options.getSubcommand(), bet = interaction.options.getInteger('bet') || 0, e = getEcon(interaction.user.id);
+      if (bet > 0 && e.coins < bet) return interaction.reply({ content: `❌ Need ${fmtC(bet)}, you have ${fmtC(e.coins)}.`, ephemeral: true });
+      if (sub === 'slots') { const [a, b, c] = [spinReel(), spinReel(), spinReel()], res = calcSlots(a, b, c, bet); addCoins(interaction.user.id, res.won ? res.payout - bet : -bet); return interaction.reply({ embeds: [new EmbedBuilder().setColor(res.won ? 0x00d26a : 0xff4444).setTitle('🎰 Slot Machine').setDescription(`**[ ${a.e}  ${b.e}  ${c.e} ]**\n\n${res.msg}`).addFields({ name: res.won ? 'Won' : 'Lost', value: res.won ? fmtC(res.payout - bet) : fmtC(bet), inline: true }, { name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      if (sub === 'flip') { const choice = interaction.options.getString('choice'), result = Math.random() < 0.5 ? 'heads' : 'tails', won = choice === result; addCoins(interaction.user.id, won ? bet : -bet); return interaction.reply({ embeds: [new EmbedBuilder().setColor(won ? 0x00d26a : 0xff4444).setTitle('🪙 Coin Flip').setDescription(`You chose **${choice}** — landed on **${result}**!\n${won ? `🎉 Won ${fmtC(bet)}!` : `💸 Lost ${fmtC(bet)}.`}`).addFields({ name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      if (sub === 'dice') { const pred = interaction.options.getString('pred'), exact = interaction.options.getInteger('num'), roll = Math.floor(Math.random() * 6) + 1; let won = false, mult = 0; if (pred === 'low' && roll >= 4) { won = true; mult = 1.9; } if (pred === 'high' && roll <= 3) { won = true; mult = 1.9; } if (pred === 'exact' && roll === exact) { won = true; mult = 5; } const payout = won ? Math.floor(bet * mult) : 0; addCoins(interaction.user.id, won ? payout - bet : -bet); return interaction.reply({ embeds: [new EmbedBuilder().setColor(won ? 0x00d26a : 0xff4444).setTitle('🎲 Dice Roll').setDescription(`Rolled **${roll}**!\n${won ? `🎉 ${mult}× — Won ${fmtC(payout - bet)}!` : `💸 Lost ${fmtC(bet)}.`}`).addFields({ name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      if (sub === 'roulette') { const choice = interaction.options.getString('choice'), num = Math.floor(Math.random() * 37), res = resolveRoulette(choice, num, bet); addCoins(interaction.user.id, res.won ? res.payout - bet : -bet); return interaction.reply({ embeds: [new EmbedBuilder().setColor(res.won ? 0x00d26a : 0xff4444).setTitle('🎡 Roulette').setDescription(`Ball landed on **${res.color} ${res.num}**!\n${res.won ? `🎉 Won ${fmtC(res.payout - bet)}!` : `💸 Lost ${fmtC(bet)}.`}`).addFields({ name: 'Your Bet', value: choice, inline: true }, { name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      if (sub === 'bj') {
+        if (bjGames.has(interaction.user.id)) return interaction.reply({ content: '❌ You already have an active game. Finish it first.', ephemeral: true });
+        if (e.coins < bet) return interaction.reply({ content: '❌ Not enough coins.', ephemeral: true });
+        addCoins(interaction.user.id, -bet);
+        const deck = buildDeck(), player = [deck.pop(), deck.pop()], dealer = [deck.pop(), deck.pop()];
+        const pv = hval(player);
+        if (pv === 21) { addCoins(interaction.user.id, Math.floor(bet * 2.5)); return interaction.reply({ embeds: [bjEmbed({ player, dealer, bet, deck, userId: interaction.user.id, balance: getEcon(interaction.user.id).coins }, 'bj')] }); }
+        const game = { player, dealer, deck, bet, userId: interaction.user.id, balance: getEcon(interaction.user.id).coins };
+        const msg = await interaction.reply({ embeds: [bjEmbed(game)], components: [bjRow()], fetchReply: true });
+        game.messageId = msg.id; bjGames.set(interaction.user.id, game);
+        setTimeout(() => { if (bjGames.has(interaction.user.id)) { bjGames.delete(interaction.user.id); } }, 5 * 60 * 1000);
+        return;
+      }
+      if (sub === 'rob') {
+        const target = interaction.options.getUser('user'); if (target.id === interaction.user.id) return interaction.reply({ content: '❌ Cannot rob yourself.', ephemeral: true });
+        const te = getEcon(interaction.user.id), now = Date.now(), cd = ROB_CD - (now - te.lastRob);
+        if (cd > 0) return interaction.reply({ content: `⏰ Rob on cooldown — **${cdFmt(cd)}** remaining.`, ephemeral: true });
+        te.lastRob = now; setEcon(interaction.user.id, te);
+        const victim = getEcon(target.id); if (victim.coins < 50) return interaction.reply({ content: `❌ ${target.username} is too broke (< 50 coins).`, ephemeral: true });
+        const hasShield = (victim.inventory?.shield || 0) > 0, success = Math.random() < 0.45;
+        if (success) { const stolen = Math.floor(victim.coins * (hasShield ? 0.10 : 0.20)); addCoins(target.id, -stolen); addCoins(interaction.user.id, stolen); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff8800).setTitle('🦹 Rob Successful!').setDescription(`Robbed ${target} for ${fmtC(stolen)}!${hasShield ? ' *(Shield reduced loot by 50%)*' : ''}`).addFields({ name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+        else { const fine = Math.floor(te.coins * 0.10); addCoins(interaction.user.id, -fine); return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🚔 Rob Failed!').setDescription(`Caught trying to rob ${target}! Fined ${fmtC(fine)}.`).addFields({ name: 'Balance', value: fmtC(getEcon(interaction.user.id).coins), inline: true })] }); }
+      }
+    }
+    // ----- HEIST (heist) -----
+    if (cmd === 'heist') {
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'start') {
+        if (heists.get(interaction.guildId)?.status === 'joining') return interaction.reply({ content: '❌ A heist is already forming! Use `/heist join`.', ephemeral: true });
+        const bet = interaction.options.getInteger('bet'), e = getEcon(interaction.user.id);
+        if (e.coins < bet) return interaction.reply({ content: `❌ Need ${fmtC(bet)} to start.`, ephemeral: true });
+        addCoins(interaction.user.id, -bet);
+        heists.set(interaction.guildId, { leaderId: interaction.user.id, minBet: bet, participants: [{ id: interaction.user.id, bet }], channelId: interaction.channel.id, status: 'joining', startTime: Date.now() });
+        const joinRow = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('heist_join').setLabel('Join Heist').setStyle(ButtonStyle.Success).setEmoji('🦹'));
+        const msg = await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff8800).setTitle('🏦 Heist Forming!').setDescription(`${interaction.user} is planning a heist! **60 seconds to join.**\nMin buy-in: ${fmtC(bet)}`).addFields({ name: 'Crew', value: `${interaction.user}` }, { name: 'Time Left', value: '60 seconds', inline: true }).setFooter({ text: 'Join with the button or /heist join' }).setTimestamp()], components: [joinRow], fetchReply: true });
+        setTimeout(async () => {
+          const h = heists.get(interaction.guildId); if (!h || h.status !== 'joining') return;
+          h.status = 'active';
+          await msg.edit({ embeds: [EmbedBuilder.from(msg.embeds[0]).setDescription(`Heist underway! 🔫\n\n**Crew (${h.participants.length}):** ${h.participants.map(p => `<@${p.id}>`).join(', ')}`).setColor(0xff4444)], components: [] }).catch(() => { });
+          setTimeout(() => resolveHeist(client, interaction.guildId, h.channelId), 5000);
+        }, 60000);
+        return;
+      }
+      if (sub === 'join') {
+        const h = heists.get(interaction.guildId); if (!h || h.status !== 'joining') return interaction.reply({ content: '❌ No active heist lobby.', ephemeral: true });
+        if (h.participants.find(p => p.id === interaction.user.id)) return interaction.reply({ content: '❌ Already in.', ephemeral: true });
+        const bet = interaction.options.getInteger('bet'); if (bet < h.minBet) return interaction.reply({ content: `❌ Min bet is ${fmtC(h.minBet)}.`, ephemeral: true });
+        const e = getEcon(interaction.user.id); if (e.coins < bet) return interaction.reply({ content: `❌ Need ${fmtC(bet)}.`, ephemeral: true });
+        addCoins(interaction.user.id, -bet); h.participants.push({ id: interaction.user.id, bet });
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('✅ Joined the Heist!').setDescription(`Crew: ${h.participants.map(p => `<@${p.id}>`).join(', ')}\nYour bet: ${fmtC(bet)}`).setTimestamp()] });
+      }
+      if (sub === 'status') {
+        const h = heists.get(interaction.guildId); if (!h) return interaction.reply({ content: '❌ No active heist.', ephemeral: true });
+        const elapsed = Math.floor((Date.now() - h.startTime) / 1000);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff8800).setTitle('🏦 Active Heist').addFields({ name: 'Status', value: h.status === 'joining' ? `🟡 Forming (${Math.max(0, 60 - elapsed)}s left)` : '🔴 In Progress', inline: true }, { name: 'Crew', value: `${h.participants.length}`, inline: true }, { name: 'Pot', value: fmtC(h.participants.reduce((a, p) => a + p.bet, 0)), inline: true }, { name: 'Members', value: h.participants.map(p => `<@${p.id}> — ${fmtC(p.bet)}`).join('\n') }).setTimestamp()], ephemeral: true });
+      }
+    }
+  } catch (err) {
+    console.error(`Error in /${cmd}:`, err);
+    const msg = { content: `❌ An error occurred: ${err.message}`, ephemeral: true };
+    if (interaction.replied || interaction.deferred) await interaction.followUp(msg).catch(() => { });
+    else await interaction.reply(msg).catch(() => { });
+  }
+});
+
+client.login(process.env.BOT_TOKEN);
