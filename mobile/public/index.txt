@@ -1,0 +1,349 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+//  IMPORTS & SETUP
+// ═══════════════════════════════════════════════════════════════════════════════
+require('dotenv').config();
+const { Client, GatewayIntentBits, REST, Routes, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ChannelType, PermissionFlagsBits } = require('discord.js');
+const { joinVoiceChannel } = require('@discordjs/voice');
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const cheerio = require('cheerio');
+
+// Polyfill for global File (for undici on Node 18)
+if (typeof globalThis.File === 'undefined') {
+  const { File } = require('buffer');
+  globalThis.File = File;
+}
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+
+const SALT_VOICE_ID = process.env.SALT_VOICE_ID;
+const ROBLOX_CHAN_ID = process.env.ROBLOX_CHAN_ID;
+const ROBLOX_SITES = (process.env.ROBLOX_SITES || 'https://whatexpsare.online,https://weao.xyz').split(',');
+
+// Economy constants
+const DAILY_CD = 86400000;
+const WORK_CD = 3600000;
+const CRIME_CD = 300000;
+const ROB_CD = 600000;
+const WORK_LINES = ['worked as a developer', 'did some freelance coding', 'completed a bounty', 'sold a script', 'won a tournament'];
+const CRIME_LIST = [
+  { m: 'Hacked a bank', min: 200, max: 800 },
+  { m: 'Pickpocketed a tourist', min: 50, max: 250 },
+  { m: 'Sold counterfeit items', min: 100, max: 500 },
+  { m: 'Robbed a convenience store', min: 150, max: 600 }
+];
+const CRIME_FAIL = ['Got caught and paid a fine of', 'Police fined you', 'You slipped and paid', 'An informant cost you'];
+const SHOP = {
+  fishingrod: { name: '🎣 Fishing Rod', price: 500, desc: 'Allows you to fish' },
+  rifle: { name: '🔫 Hunting Rifle', price: 1200, desc: 'Allows you to hunt' },
+  pickaxe: { name: '⛏️ Pickaxe', price: 800, desc: 'Allows you to mine' },
+  laptop: { name: '💻 Laptop', price: 2000, desc: 'Reduces crime fail rate & increases reward' },
+  shield: { name: '🛡️ Shield', price: 1500, desc: 'Reduces stolen amount when robbed' }
+};
+const FISH = [
+  { n: '🐟 Salmon', v: 30 }, { n: '🐠 Clownfish', v: 50 }, { n: '🐡 Blowfish', v: 70 }, { n: '🐙 Octopus', v: 90 }, { n: '🦑 Squid', v: 110 }, { n: '🐋 Whale', v: 500 }
+];
+const HUNT = [
+  { n: '🐇 Rabbit', v: 40 }, { n: '🦊 Fox', v: 80 }, { n: '🐗 Boar', v: 120 }, { n: '🦌 Deer', v: 200 }, { n: '🐻 Bear', v: 400 }
+];
+const MINE = [
+  { n: '🪨 Stone', v: 20 }, { n: '⚒️ Coal', v: 40 }, { n: '🔩 Iron', v: 80 }, { n: '💎 Emerald', v: 200 }, { n: '✨ Diamond', v: 500 }
+];
+
+// ─── HELPER FUNCTIONS (DB, etc.) ──────────────────────────────────────────────
+function readDB(name) {
+  const p = path.join(DATA_DIR, `${name}.json`);
+  if (!fs.existsSync(p)) return {};
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return {}; }
+}
+function writeDB(name, data) {
+  fs.writeFileSync(path.join(DATA_DIR, `${name}.json`), JSON.stringify(data, null, 2));
+}
+
+function getEcon(userId) {
+  const db = readDB('economy');
+  if (!db[userId]) db[userId] = { coins: 500, bank: 0, lastDaily: 0, lastWork: 0, lastCrime: 0, lastRob: 0, streak: 0, inventory: {} };
+  return db[userId];
+}
+function setEcon(userId, data) { const db = readDB('economy'); db[userId] = data; writeDB('economy', db); }
+function addCoins(userId, amount) { const e = getEcon(userId); e.coins += amount; if (e.coins < 0) e.coins = 0; setEcon(userId, e); }
+function fmtC(coins) { return `${coins.toLocaleString()} 🪙`; }
+function cdFmt(ms) { const s = Math.floor(ms / 1000); const m = Math.floor(s / 60); const h = Math.floor(m / 60); if (h) return `${h}h ${m % 60}m`; if (m) return `${m}m ${s % 60}s`; return `${s}s`; }
+function wPick(arr) { const total = arr.reduce((s, i) => s + i.v, 0); let r = Math.random() * total; for (const i of arr) { r -= i.v; if (r <= 0) return i; } return arr[0]; }
+function genKey() { return 'SALT-' + Math.random().toString(36).substring(2, 10).toUpperCase(); }
+function parseDur(dur) { const m = dur.match(/^(\d+)(s|m|h|d)$/i); if (!m) throw new Error('Invalid duration. Use e.g. 30m, 2h, 7d'); const ms = parseInt(m[1]) * (m[2] === 's' ? 1000 : m[2] === 'm' ? 60000 : m[2] === 'h' ? 3600000 : 86400000); return new Date(Date.now() + ms); }
+function parseTimeToMs(time) { const m = time.match(/^(\d+)(s|m|h|d|w)$/i); if (!m) throw new Error('Invalid time format'); let mult = 1; if (m[2] === 'w') mult = 7; const ms = parseInt(m[1]) * (m[2] === 's' ? 1000 : m[2] === 'm' ? 60000 : m[2] === 'h' ? 3600000 : 86400000) * (mult === 7 ? 7 : 1); return ms; }
+function fmtExp(exp) { return exp ? `<t:${Math.floor(new Date(exp).getTime() / 1000)}:R>` : 'Never'; }
+function keyExp(k) { return k.expiresAt && new Date(k.expiresAt) < new Date(); }
+function parseGwDur(dur) { const m = dur.match(/^(\d+)(s|m|h|d)$/i); if (!m) throw new Error('Invalid duration'); return parseInt(m[1]) * (m[2] === 's' ? 1000 : m[2] === 'm' ? 60000 : m[2] === 'h' ? 3600000 : 86400000); }
+function pickWinners(entries, count) { const shuffled = [...entries]; for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; } return shuffled.slice(0, count); }
+function spinReel() { const reels = [{ e: '🍒', v: 1 }, { e: '🍋', v: 2 }, { e: '🍊', v: 3 }, { e: '🔔', v: 4 }, { e: '💎', v: 10 }]; return reels[Math.floor(Math.random() * reels.length)]; }
+function calcSlots(a, b, c, bet) { if (a.e === b.e && b.e === c.e) { const mult = a.v === 10 ? 50 : a.v === 4 ? 10 : a.v === 3 ? 5 : 2; return { won: true, payout: bet * mult, msg: `JACKPOT! ${a.e} x3!` }; } else if (a.e === b.e || b.e === c.e || a.e === c.e) { return { won: true, payout: bet * 2, msg: `Pair of ${a.e === b.e ? a.e : c.e}!` }; } else { return { won: false, payout: 0, msg: 'You lost...' }; } }
+function resolveRoulette(choice, num, bet) { const color = (num === 0) ? 'green' : (num % 2 === 0 ? 'black' : 'red'); let won = false, mult = 0; if (choice === 'red' && color === 'red') { won = true; mult = 2; } else if (choice === 'black' && color === 'black') { won = true; mult = 2; } else if (choice === 'even' && num !== 0 && num % 2 === 0) { won = true; mult = 2; } else if (choice === 'odd' && num % 2 === 1) { won = true; mult = 2; } else if (choice === `num_${num}`) { won = true; mult = 36; } return { won, payout: won ? bet * mult : 0, color, num }; }
+function buildDeck() { const suits = ['♠', '♥', '♣', '♦']; const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']; const deck = []; for (const s of suits) for (const v of values) deck.push({ v, s, val: v === 'A' ? 11 : ['K', 'Q', 'J'].includes(v) ? 10 : parseInt(v) }); for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; } return deck; }
+function hval(hand) { let sum = hand.reduce((a, c) => a + c.val, 0); let aces = hand.filter(c => c.v === 'A').length; while (sum > 21 && aces > 0) { sum -= 10; aces--; } return sum; }
+function bjEmbed(game, state = 'playing') { const pv = hval(game.player), dv = hval(game.dealer); let desc = `**Your hand:** ${game.player.map(c => `${c.v}${c.s}`).join(' ')} = ${pv}\n**Dealer shows:** ${game.dealer[0].v}${game.dealer[0].s} ?`; if (state !== 'playing') desc = `**Your hand:** ${game.player.map(c => `${c.v}${c.s}`).join(' ')} = ${pv}\n**Dealer hand:** ${game.dealer.map(c => `${c.v}${c.s}`).join(' ')} = ${dv}\n\nYou ${state === 'bj' ? 'got Blackjack! +150%' : state === 'bust' ? 'busted!' : dv > 21 ? 'dealer busts, you win!' : pv > dv ? 'you win!' : pv === dv ? 'push' : 'dealer wins'}`; return new EmbedBuilder().setColor(0x5865f2).setTitle('🎰 Blackjack').setDescription(desc).addFields({ name: '💰 Bet', value: fmtC(game.bet), inline: true }, { name: '💳 Balance', value: fmtC(game.balance), inline: true }); }
+function bjRow() { return new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('bj_hit').setLabel('Hit').setStyle(ButtonStyle.Primary), new ButtonBuilder().setCustomId('bj_stand').setLabel('Stand').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('bj_double').setLabel('Double').setStyle(ButtonStyle.Danger)); }
+async function resolveBJ(interaction, game) { let dv = hval(game.dealer); while (dv < 17) { game.dealer.push(game.deck.pop()); dv = hval(game.dealer); } const pv = hval(game.player); let won = false, mult = 1; if (pv > 21) { addCoins(game.userId, -game.bet); } else if (dv > 21 || pv > dv) { won = true; mult = 2; addCoins(game.userId, game.bet * mult); } else if (pv === dv) { addCoins(game.userId, game.bet); } else { addCoins(game.userId, -game.bet); } const newBalance = getEcon(game.userId).coins; bjGames.delete(game.userId); await interaction.message.edit({ embeds: [bjEmbed({ ...game, balance: newBalance }, won ? 'win' : pv === dv ? 'push' : 'lose')], components: [] }).catch(() => {}); }
+const bjGames = new Map(); const heists = new Map();
+
+// Permission helpers
+function isAdmin(m) { return m.permissions.has(PermissionFlagsBits.Administrator); }
+function isMod(m) { return isAdmin(m) || m.permissions.has(PermissionFlagsBits.ModerateMembers); }
+function hasAllow(m, cmd) { if (isAdmin(m)) return true; const db = readDB('allows'); if (db.users?.[m.id]?.includes(cmd)) return true; for (const rid of m.roles.cache.keys()) if (db.roles?.[rid]?.includes(cmd)) return true; return false; }
+function denyA(i) { return i.reply({ content: '❌ Admin only.', ephemeral: true }); }
+function denyM(i) { return i.reply({ content: '❌ Mod only.', ephemeral: true }); }
+function denyAllow(i, cmd) { return i.reply({ content: `❌ Need \`${cmd}\` permission.`, ephemeral: true }); }
+
+// Prefix system
+function getPrefix(guildId) { const cfg = readDB('config'); return cfg.prefix || '!'; }
+async function handlePrefixCommand(message) {
+  if (message.author.bot || !message.guild) return;
+  const prefix = getPrefix(message.guild.id);
+  if (!message.content.startsWith(prefix)) return;
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
+  const cmd = args.shift().toLowerCase();
+  if (cmd === 'ping') await message.reply('Pong! 🏓');
+  else if (cmd === 'help') await message.reply('Use `/` commands for all features!');
+}
+
+// Filter & anti-spam
+const userMsgMap = new Map();
+async function handleAntiSpam(msg) { 
+  if (isMod(msg.member)) return;
+  const cfg = readDB('config').antispam; 
+  if (!cfg?.enabled) return; 
+  const key = msg.author.id, now = Date.now(); 
+  if (!userMsgMap.has(key)) userMsgMap.set(key, []); 
+  const msgs = userMsgMap.get(key).filter(t => now - t < cfg.interval); 
+  msgs.push(now); 
+  userMsgMap.set(key, msgs); 
+  if (msgs.length >= cfg.threshold) { 
+    if (cfg.action === 'delete') await msg.delete().catch(() => {}); 
+    else if (cfg.action === 'mute') await msg.member?.timeout(10 * 60 * 1000, 'Auto-spam').catch(() => {}); 
+    userMsgMap.delete(key); 
+  } 
+}
+const abuseCache = new Map();
+async function handleAntiAbuse(msg) { 
+  if (isMod(msg.member)) return;
+  const cfg = readDB('config').antiabuse; 
+  if (!cfg?.enabled) return; 
+  if (msg.mentions.users.size >= 5 && cfg.blockMassPing) { 
+    await msg.delete().catch(() => {}); 
+    await msg.member?.timeout(5 * 60 * 1000, 'Mass mention'); 
+  } 
+  const actions = ['ban', 'kick']; 
+  for (const a of actions) if (msg.content.toLowerCase().includes(`/${a}`) && cfg[`blockMass${a.charAt(0).toUpperCase() + a.slice(1)}`]) { 
+    const key = `${msg.author.id}_${a}`, now = Date.now(); 
+    if (!abuseCache.has(key)) abuseCache.set(key, []); 
+    const times = abuseCache.get(key).filter(t => now - t < 10000); 
+    times.push(now); 
+    abuseCache.set(key, times); 
+    if (times.length >= 3) { 
+      await msg.member?.timeout(60 * 60 * 1000, 'Mass mod command spam').catch(() => {}); 
+      abuseCache.delete(key); 
+    } 
+  } 
+}
+
+function filterCheck(content, userId) { 
+  const lists = readDB('lists'); 
+  const wl = lists.whitelist?.[userId]; 
+  if (wl?.scope === 'all') return { matched: false }; 
+  const db = readDB('wordfilter'); 
+  const words = db.words || []; 
+  const anti = readDB('config').antibypass !== false; 
+  let normalized = content.toLowerCase(); 
+  if (anti) normalized = normalized.replace(/[^\w\s]/g, '').replace(/([a-z])\1{2,}/g, '$1$1'); 
+  for (const w of words) { 
+    if (wl?.words?.includes(w)) continue; 
+    if (normalized.includes(w)) return { matched: true, word: w }; 
+  } 
+  return { matched: false }; 
+}
+
+async function trackMod(guild, modId, action) { const db = readDB('modStats'); if (!db[modId]) db[modId] = {}; db[modId][action] = (db[modId][action] || 0) + 1; db[modId].lastAction = Date.now(); writeDB('modStats', db); }
+
+async function joinSaltVoice(client) {
+  if (!SALT_VOICE_ID) return;
+  const channel = client.channels.cache.get(SALT_VOICE_ID);
+  if (!channel || channel.type !== ChannelType.GuildVoice) return;
+  try {
+    joinVoiceChannel({ channelId: channel.id, guildId: channel.guild.id, adapterCreator: channel.guild.voiceAdapterCreator });
+    console.log('✅ Joined voice channel');
+  } catch (err) { console.error('❌ Could not join voice:', err.message); }
+}
+
+async function updateMemberCount(client) { const cfg = readDB('config'); const chId = cfg.memberCountChannelId; if (!chId) return; const ch = client.channels.cache.get(chId); if (ch) await ch.setName(`👥 Members: ${client.guilds.cache.first()?.memberCount || 0}`).catch(() => {}); }
+async function sendWelcome(member) { const cfg = readDB('config').welcome || {}; if (cfg.enabled === false) return; const ch = cfg.channelId ? member.guild.channels.cache.get(cfg.channelId) : member.guild.systemChannel; if (!ch) return; const title = cfg.title || `Welcome to ${member.guild.name}!`; const msg = (cfg.message || `Hey ${member}, welcome!`).replace('{user}', `${member}`).replace('{server}', member.guild.name).replace('{memberCount}', member.guild.memberCount); const e = new EmbedBuilder().setColor(cfg.color ? parseInt(cfg.color.replace('#', ''), 16) : 0x5865f2).setTitle(title).setDescription(msg).setTimestamp(); if (cfg.useEmbed !== false && cfg.thumbnail !== false) e.setThumbnail(member.user.displayAvatarURL({ dynamic: true })); await ch.send({ embeds: [e] }).catch(() => {}); if (cfg.dmEnabled) { try { await member.send({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`Welcome to ${member.guild.name}!`).setDescription(`Hey ${member}, glad to have you!\n\nCheck out the rules and have fun.`).setTimestamp()] }); } catch {} } }
+
+async function openTicketCh(interaction, reason, type) { const cfg = readDB('config').ticket || {}; const catId = cfg.categoryId; const supportRoleId = cfg.supportRoleId; const limit = cfg.limitPerUser || 3; const tickets = readDB('tickets'); const existing = Object.values(tickets).filter(t => t.userId === interaction.user.id && t.status === 'open'); if (existing.length >= limit) { await interaction.editReply({ content: `❌ You already have ${existing.length} open tickets (max ${limit}). Close some first.` }); return null; } const ch = await interaction.guild.channels.create({ name: `ticket-${interaction.user.username}`, type: ChannelType.GuildText, parent: catId || null, permissionOverwrites: [{ id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] }, { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] }, ...(supportRoleId ? [{ id: supportRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : [])] }); const ticketNum = Object.keys(tickets).length + 1; tickets[ch.id] = { channelId: ch.id, userId: interaction.user.id, reason, type, createdAt: new Date().toISOString(), status: 'open', ticketNum, claimedBy: null, priority: 'normal' }; writeDB('tickets', tickets); await ch.send({ content: `${interaction.user}`, embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle(`🎫 Ticket #${ticketNum}`).setDescription(`**Reason:** ${reason}\n**Type:** ${type}\n\nSupport will be with you shortly.`).setFooter({ text: `Use buttons below or /ticket` }).setTimestamp()], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('ticket_claim').setLabel('Claim').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('ticket_priority').setLabel('Set Priority').setStyle(ButtonStyle.Secondary))] }); return { ch: ch.toString() }; }
+async function closeTicketCh(interaction) { const tickets = readDB('tickets'); const t = tickets[interaction.channel.id]; if (!t) return interaction.reply({ content: '❌ Not a ticket.', ephemeral: true }); t.status = 'closed'; t.closedAt = new Date().toISOString(); writeDB('tickets', tickets); await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🔒 Ticket Closed').setDescription('This ticket will be deleted in 5 seconds.')] }); setTimeout(() => interaction.channel.delete().catch(() => {}), 5000); }
+
+async function endGiveaway(client, messageId) { const gw = readDB('giveaways'); const g = gw[messageId]; if (!g || g.ended) return; g.ended = true; const channel = client.channels.cache.get(g.channelId); if (channel) { const winners = pickWinners(g.entries, g.winnersCount); const winnerMentions = winners.map(id => `<@${id}>`).join(', ') || 'No entries'; await channel.send({ embeds: [new EmbedBuilder().setColor(0xff73fa).setTitle('🎉 GIVEAWAY ENDED 🎉').setDescription(`**Prize:** ${g.prize}\n**Winner(s):** ${winnerMentions}`).setTimestamp()] }); try { const msg = await channel.messages.fetch(messageId); if (msg) await msg.edit({ components: [] }); } catch {} } writeDB('giveaways', gw); }
+
+async function resolveHeist(client, guildId, channelId) { const h = heists.get(guildId); if (!h) return; const pot = h.participants.reduce((a, p) => a + p.bet, 0); const success = Math.random() < 0.4; const channel = client.channels.cache.get(channelId); if (!channel) return; if (success) { const mult = 1 + (h.participants.length - 1) * 0.1; const totalWin = Math.floor(pot * mult); const share = Math.floor(totalWin / h.participants.length); for (const p of h.participants) addCoins(p.id, share); await channel.send({ embeds: [new EmbedBuilder().setColor(0x00d26a).setTitle('🏆 Heist Successful!').setDescription(`The crew escaped with **${fmtC(totalWin)}**!\nEach member received **${fmtC(share)}**.`).setFooter({ text: `+${mult * 100 - 100}% bonus for teamwork` })] }); } else { const fine = Math.floor(pot * 0.3); for (const p of h.participants) addCoins(p.id, -Math.floor(fine / h.participants.length)); await channel.send({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('💀 Heist Failed!').setDescription(`The crew got caught and lost **${fmtC(fine)}** in fines.`)] }); } heists.delete(guildId); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  ROBLOX UPDATE
+// ═══════════════════════════════════════════════════════════════════════════════
+async function sendRobloxUpdate(client, data) {
+  const cfg = readDB('config').roblox || {};
+  const channelId = cfg.channelId || ROBLOX_CHAN_ID;
+  const channel = client.channels.cache.get(channelId);
+  if (!channel) return console.error('❌ Roblox channel not found');
+
+  const pingRole = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>\n` : '';
+  const embedColor = cfg.color ? parseInt(cfg.color.replace('#', ''), 16) : 0xff6600;
+
+  let description = `> **${data.liveMsg || 'Live update detected!'}**\n> *${data.patchNote || 'Salt is patched.'}*`;
+  const embed = new EmbedBuilder()
+    .setColor(embedColor)
+    .setTitle(cfg.title || 'ROBLOX Update Detected')
+    .setDescription(description)
+    .addFields(
+      { name: 'Platform', value: data.platform || 'Windows', inline: true },
+      { name: 'Version Hash', value: `\`${data.versionHash}\``, inline: true },
+      { name: 'Date', value: `<t:${Math.floor(data.timestamp / 1000)}:F>`, inline: true }
+    )
+    .setFooter({ text: cfg.footer || 'Source: whatexpsare.online • SRE Bot', iconURL: client.user.displayAvatarURL() })
+    .setTimestamp(data.timestamp);
+
+  if (cfg.thumbnail) embed.setThumbnail(cfg.thumbnail);
+  if (data.downloadNumbers) embed.addFields({ name: '📦 Download version', value: data.downloadNumbers, inline: false });
+  if (data.downloadUrl) embed.addFields({ name: '🔗 Download Link', value: `[Click here to download Roblox](${data.downloadUrl})`, inline: false });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`copy_hash_${data.versionHash.slice(-8)}`).setLabel('Copy Hash').setStyle(ButtonStyle.Secondary).setEmoji('📋'),
+    new ButtonBuilder().setLabel('Download Roblox').setStyle(ButtonStyle.Link).setURL(data.downloadUrl || cfg.downloadUrl || 'https://www.roblox.com/download').setEmoji('⬇️')
+  );
+  await channel.send({ content: pingRole, embeds: [embed], components: [row] });
+}
+
+async function checkRoblox(client) {
+  try {
+    const cfg = readDB('config').roblox || {};
+    let latestUpdate = null, allUpdates = [];
+    for (const site of ROBLOX_SITES) {
+      try {
+        const res = await axios.get(site.trim(), { timeout: 10000, headers: { 'User-Agent': 'SRE-Bot/1.0' } });
+        let versionHash = null, platform = 'Windows', rawDate = null, numbers = null, liveMsg = null, patchNote = null, downloadUrl = null;
+        if (res.headers['content-type']?.includes('html')) {
+          const $ = cheerio.load(res.data);
+          versionHash = $('meta[name="version-hash"]').attr('content') || $('meta[property="roblox:version"]').attr('content') || $('.version-hash').text().trim() || res.data.match(/version-[a-f0-9]{16}/i)?.[0] || res.data.match(/[a-f0-9]{16}/i)?.[0];
+          platform = $('meta[name="platform"]').attr('content') || $('.platform').text().trim() || 'Windows';
+          rawDate = $('meta[name="update-date"]').attr('content') || $('.update-date').text().trim() || $('time').attr('datetime');
+          const numMatch = res.data.match(/\b\d{1,2}\s+\d\s+\d\s+\d\s+\d\s+\d\b/);
+          if (numMatch) numbers = numMatch[0];
+          const urlMatch = res.data.match(/https?:\/\/[^\s]+roblox[^\s]+\.exe/i) || res.data.match(/https?:\/\/setup\.rbxcdn\.com\/[^\s]+/i);
+          if (urlMatch) downloadUrl = urlMatch[0];
+          if (res.data.match(/Live update detected!/i)) liveMsg = 'Live update detected!';
+          const patchMatch = res.data.match(/Salt is patched|Real is patched|Medium is patched/i);
+          if (patchMatch) patchNote = patchMatch[0];
+        } else {
+          const json = typeof res.data === 'object' ? res.data : JSON.parse(res.data);
+          versionHash = json.versionHash || json.build || json.version;
+          platform = json.platform || 'Cross-Platform';
+          rawDate = json.date || json.timestamp || json.publishedAt;
+          numbers = json.downloadNumbers || json.buildNumbers;
+          liveMsg = json.liveMessage;
+          patchNote = json.patchNote;
+          downloadUrl = json.downloadUrl;
+        }
+        if (!versionHash) continue;
+        let timestamp = rawDate ? new Date(rawDate).getTime() : Date.now();
+        if (isNaN(timestamp)) timestamp = Date.now();
+        allUpdates.push({ source: site, versionHash: String(versionHash).trim(), platform: String(platform).trim(), timestamp, downloadNumbers: numbers || null, downloadUrl: downloadUrl || null, liveMsg: liveMsg || cfg.liveMessage || 'Live update detected!', patchNote: patchNote || cfg.patchNote || 'Salt is patched.' });
+      } catch (e) { console.warn(`⚠️ Failed to fetch ${site}:`, e.message); }
+    }
+    if (allUpdates.length === 0) return;
+    allUpdates.sort((a, b) => b.timestamp - a.timestamp);
+    latestUpdate = allUpdates[0];
+    const stored = readDB('robloxState') || {};
+    let hasNewUpdate = false;
+    for (const update of allUpdates) { if (stored.lastHash !== update.versionHash) { hasNewUpdate = true; latestUpdate = update; break; } }
+    if (!hasNewUpdate && stored.lastHash === latestUpdate.versionHash) return;
+    stored.lastHash = latestUpdate.versionHash;
+    stored.lastChecked = Date.now();
+    stored.lastUpdateData = latestUpdate;
+    stored.updateHistory = stored.updateHistory || [];
+    stored.updateHistory.unshift({ hash: latestUpdate.versionHash, timestamp: latestUpdate.timestamp, date: new Date(latestUpdate.timestamp).toISOString() });
+    if (stored.updateHistory.length > 10) stored.updateHistory.pop();
+    writeDB('robloxState', stored);
+    await sendRobloxUpdate(client, latestUpdate);
+    console.log(`✅ New Roblox update detected: ${latestUpdate.versionHash} from ${latestUpdate.source}`);
+  } catch (err) { console.error('❌ checkRoblox error:', err); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  DISCORD COMMANDS LIST – all options have descriptions, names ≤25 chars
+// ═══════════════════════════════════════════════════════════════════════════════
+const CMDS = [
+  { name: 'say', description: 'Make the bot say something', options: [{ name: 'msg', type: 3, description: 'Text to say', required: true }, { name: 'ch', type: 7, description: 'Channel to send to' }, { name: 'img', type: 3, description: 'Image URL to attach' }] },
+  { name: 'embed', description: 'Send an embed', options: [{ name: 'title', type: 3, description: 'Embed title', required: true }, { name: 'desc', type: 3, description: 'Embed description', required: true }, { name: 'col', type: 3, description: 'Hex color code' }, { name: 'foot', type: 3, description: 'Footer text' }, { name: 'img', type: 3, description: 'Image URL' }, { name: 'thumb', type: 3, description: 'Thumbnail URL' }, { name: 'ch', type: 7, description: 'Channel to send to' }] },
+  { name: 'status', description: 'Change bot status', options: [{ name: 'text', type: 3, description: 'Status text', required: true }, { name: 'type', type: 3, description: 'Activity type', choices: [{ name: 'Playing', value: '0' }, { name: 'Listening', value: '2' }, { name: 'Watching', value: '3' }] }, { name: 'pres', type: 3, description: 'Online presence', choices: [{ name: 'Online', value: 'online' }, { name: 'Idle', value: 'idle' }, { name: 'DND', value: 'dnd' }, { name: 'Invisible', value: 'invisible' }] }] },
+  { name: 'mcount', description: 'Show member count' },
+  { name: 'sinfo', description: 'Server info' },
+  { name: 'uinfo', description: 'User info', options: [{ name: 'user', type: 6, description: 'Target user' }] },
+  { name: 'av', description: 'Show avatar', options: [{ name: 'user', type: 6, description: 'Target user' }] },
+  { name: 'purge', description: 'Delete messages', options: [{ name: 'amt', type: 4, description: 'Number of messages', required: true }, { name: 'user', type: 6, description: 'Filter by user' }, { name: 'bots', type: 5, description: 'Only bots' }, { name: 'links', type: 5, description: 'Only messages with links' }, { name: 'embeds', type: 5, description: 'Only embeds' }, { name: 'contains', type: 3, description: 'Filter by text' }] },
+  { name: 'prefix', description: 'Set custom prefix', options: [{ name: 'pre', type: 3, description: 'New prefix (e.g. !, ?, $)', required: true }] },
+  { name: 'welcome', description: 'Welcome config', options: [{ name: 'set', type: 1, description: 'Set a setting', options: [{ name: 'key', type: 3, description: 'Setting name', required: true }, { name: 'val', type: 3, description: 'Setting value', required: true }] }, { name: 'toggle', type: 1, description: 'Toggle a feature', options: [{ name: 'feat', type: 3, description: 'Feature to toggle', required: true }] }, { name: 'test', type: 1, description: 'Send test welcome' }, { name: 'reset', type: 1, description: 'Reset config' }, { name: 'stat', type: 1, description: 'Show current config' }] },
+  { name: 'gkey', description: 'Generate a license key', options: [{ name: 'dur', type: 3, description: 'Duration (e.g. 30d, 12h)', required: true }, { name: 'hlim', type: 4, description: 'Max HWIDs' }, { name: 'asgn', type: 6, description: 'User to assign key to' }] },
+  { name: 'kinfo', description: 'Key info', options: [{ name: 'key', type: 3, description: 'Key code' }, { name: 'user', type: 6, description: 'User to check keys for' }] },
+  { name: 'rkey', description: 'Revoke a key', options: [{ name: 'key', type: 3, description: 'Key to revoke', required: true }] },
+  { name: 'wl', description: 'Manage filter whitelist', options: [{ name: 'add', type: 1, description: 'Add user to whitelist', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'scope', type: 3, description: 'Scope (all or specific word)', required: true, choices: [{ name: 'All words', value: 'all' }, { name: 'Specific word', value: 'word' }] }, { name: 'word', type: 3, description: 'Specific word if scope=word' }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'rem', type: 1, description: 'Remove user from whitelist', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'chk', type: 1, description: 'Check whitelist status', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'list', type: 1, description: 'List all whitelisted users' }, { name: 'addw', type: 1, description: 'Add allowed word for user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'word', type: 3, description: 'Word to allow', required: true }] }] },
+  { name: 'rwl', description: 'Remove whitelist entry', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'word', type: 3, description: 'Specific word to remove' }] },
+  { name: 'bl', description: 'Blacklist user', options: [{ name: 'add', type: 1, description: 'Add user to blacklist', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'rem', type: 1, description: 'Remove user from blacklist', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'list', type: 1, description: 'List blacklisted users' }] },
+  { name: 'allow', description: 'Grant command permission', options: [{ name: 'user', type: 1, description: 'Grant to user', options: [{ name: 'target', type: 6, description: 'User', required: true }, { name: 'cmds', type: 3, description: 'Comma-separated command names', required: true }] }, { name: 'role', type: 1, description: 'Grant to role', options: [{ name: 'target', type: 8, description: 'Role', required: true }, { name: 'cmds', type: 3, description: 'Comma-separated command names', required: true }] }, { name: 'list', type: 1, description: 'List current allows' }] },
+  { name: 'rallow', description: 'Revoke command permission', options: [{ name: 'user', type: 1, description: 'Revoke from user', options: [{ name: 'target', type: 6, description: 'User', required: true }, { name: 'cmds', type: 3, description: 'Commands to revoke (or "all")' }] }, { name: 'role', type: 1, description: 'Revoke from role', options: [{ name: 'target', type: 8, description: 'Role', required: true }, { name: 'cmds', type: 3, description: 'Commands to revoke (or "all")' }] }] },
+  { name: 'mod', description: 'Moderation commands', options: [
+    { name: 'ban', type: 1, description: 'Ban a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }, { name: 'days', type: 4, description: 'Days of messages to delete' }] },
+    { name: 'sban', type: 1, description: 'Softban (ban & unban)', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }, { name: 'days', type: 4, description: 'Days of messages to delete' }] },
+    { name: 'tban', type: 1, description: 'Temporary ban', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'dur', type: 3, description: 'Duration (e.g. 1h, 2d, 1w)', required: true }, { name: 'reason', type: 3, description: 'Reason' }, { name: 'days', type: 4, description: 'Days of messages to delete' }] },
+    { name: 'unban', type: 1, description: 'Unban a user', options: [{ name: 'uid', type: 3, description: 'User ID', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'kick', type: 1, description: 'Kick a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'mute', type: 1, description: 'Timeout a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'dur', type: 3, description: 'Duration (e.g. 30m, 1h)', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'unmute', type: 1, description: 'Remove timeout', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'vkick', type: 1, description: 'Kick user from voice', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'mvall', type: 1, description: 'Move all voice members', options: [{ name: 'from', type: 7, description: 'Source voice channel', required: true }, { name: 'to', type: 7, description: 'Target voice channel', required: true }] },
+    { name: 'warn', type: 1, description: 'Warn a user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'strike', type: 1, description: 'Add a strike (3 = mute)', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'warns', type: 1, description: 'View warnings', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'cwarns', type: 1, description: 'Clear all warnings', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'dwarn', type: 1, description: 'Remove a warning', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'idx', type: 4, description: 'Warning number', required: true }] },
+    { name: 'notes', type: 1, description: 'Add mod note', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'note', type: 3, description: 'Note text', required: true }] },
+    { name: 'vnotes', type: 1, description: 'View notes', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'slow', type: 1, description: 'Set slowmode', options: [{ name: 'secs', type: 4, description: 'Slowmode seconds', required: true }] },
+    { name: 'lock', type: 1, description: 'Lock the channel', options: [{ name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'unlock', type: 1, description: 'Unlock the channel' },
+    { name: 'hide', type: 1, description: 'Hide from @everyone', options: [{ name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'reveal', type: 1, description: 'Reveal to @everyone' },
+    { name: 'clone', type: 1, description: 'Clone channel', options: [{ name: 'name', type: 3, description: 'New channel name' }] },
+    { name: 'ldown', type: 1, description: 'Lockdown all channels', options: [{ name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'uldwn', type: 1, description: 'Unlock all channels' },
+    { name: 'nick', type: 1, description: 'Change nickname', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'nick', type: 3, description: 'New nickname (empty to reset)' }, { name: 'reason', type: 3, description: 'Reason' }] },
+    { name: 'logs', type: 1, description: 'View moderation history', options: [{ name: 'user', type: 6, description: 'User', required: true }] },
+    { name: 'case', type: 1, description: 'View specific case', options: [{ name: 'id', type: 4, description: 'Case ID', required: true }] }
+  ] },
+  { name: 'filter', description: 'Word filter', options: [{ name: 'add', type: 1, description: 'Add word to filter', options: [{ name: 'word', type: 3, description: 'Word to filter', required: true }, { name: 'act', type: 3, description: 'Action on match', choices: [{ name: 'Delete', value: 'delete' }, { name: 'Mute', value: 'mute' }] }] }, { name: 'rem', type: 1, description: 'Remove word from filter', options: [{ name: 'word', type: 3, description: 'Word to remove', required: true }] }, { name: 'list', type: 1, description: 'List filtered words' }, { name: 'abypass', type: 1, description: 'Toggle anti-bypass', options: [{ name: 'en', type: 5, description: 'Enable/disable', required: true }] }, { name: 'logch', type: 1, description: 'Set log channel', options: [{ name: 'ch', type: 7, description: 'Channel', required: true }] }, { name: 'wmsg', type: 1, description: 'Set warning message', options: [{ name: 'msg', type: 3, description: 'Message (use {user})', required: true }] }] },
+  { name: 'unfilter', description: 'Remove word from filter', options: [{ name: 'word', type: 3, description: 'Word to remove', required: true }] },
+  { name: 'aspam', description: 'Anti-spam', options: [{ name: 'en', type: 1, description: 'Enable anti-spam', options: [{ name: 'thresh', type: 4, description: 'Messages per interval' }, { name: 'int', type: 4, description: 'Interval in seconds' }, { name: 'act', type: 3, description: 'Action to take', choices: [{ name: 'Delete', value: 'delete' }, { name: 'Mute', value: 'mute' }] }] }, { name: 'dis', type: 1, description: 'Disable anti-spam' }, { name: 'stat', type: 1, description: 'Show status' }] },
+  { name: 'aabuse', description: 'Anti-abuse', options: [{ name: 'en', type: 1, description: 'Enable anti-abuse', options: [{ name: 'ping', type: 5, description: 'Block mass pings' }, { name: 'ban', type: 5, description: 'Block mass bans' }, { name: 'kick', type: 5, description: 'Block mass kicks' }, { name: 'log', type: 3, description: 'Log channel ID' }] }, { name: 'dis', type: 1, description: 'Disable anti-abuse' }, { name: 'stat', type: 1, description: 'Show status' }] },
+  { name: 'ticket', description: 'Ticket system', options: [{ name: 'open', type: 1, description: 'Open a ticket', options: [{ name: 'reason', type: 3, description: 'Reason', required: true }] }, { name: 'close', type: 1, description: 'Close current ticket' }, { name: 'add', type: 1, description: 'Add user to ticket', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'rem', type: 1, description: 'Remove user from ticket', options: [{ name: 'user', type: 6, description: 'User', required: true }] }, { name: 'list', type: 1, description: 'List open tickets' }, { name: 'rename', type: 1, description: 'Rename ticket channel', options: [{ name: 'name', type: 3, description: 'New name', required: true }] }, { name: 'claim', type: 1, description: 'Claim ticket' }, { name: 'unclaim', type: 1, description: 'Unclaim ticket' }, { name: 'prio', type: 1, description: 'Set ticket priority', options: [{ name: 'level', type: 3, description: 'Priority level', required: true, choices: [{ name: 'Low', value: 'low' }, { name: 'Normal', value: 'normal' }, { name: 'High', value: 'high' }, { name: 'Critical', value: 'critical' }] }] }, { name: 'note', type: 1, description: 'Add staff note', options: [{ name: 'text', type: 3, description: 'Note text', required: true }] }, { name: 'setup', type: 1, description: 'Configure ticket settings', options: [{ name: 'key', type: 3, description: 'Setting name', required: true }, { name: 'val', type: 3, description: 'Setting value', required: true }] }] },
+  { name: 'panel', description: 'Ticket panel', options: [{ name: 'setup', type: 1, description: 'Set panel config', options: [{ name: 'key', type: 3, description: 'Setting name', required: true }, { name: 'val', type: 3, description: 'Setting value', required: true }] }, { name: 'addtype', type: 1, description: 'Add ticket type', options: [{ name: 'id', type: 3, description: 'Type ID', required: true }, { name: 'label', type: 3, description: 'Button label', required: true }, { name: 'emoji', type: 3, description: 'Emoji' }, { name: 'style', type: 3, description: 'Button style', choices: [{ name: 'Primary', value: 'Primary' }, { name: 'Success', value: 'Success' }, { name: 'Danger', value: 'Danger' }, { name: 'Secondary', value: 'Secondary' }] }] }, { name: 'rmtype', type: 1, description: 'Remove ticket type', options: [{ name: 'id', type: 3, description: 'Type ID', required: true }] }, { name: 'types', type: 1, description: 'List ticket types' }, { name: 'prev', type: 1, description: 'Preview panel' }, { name: 'send', type: 1, description: 'Send panel to channel', options: [{ name: 'ch', type: 7, description: 'Target channel' }] }] },
+  { name: 'rbx', description: 'Roblox update config', options: [{ name: 'setup', type: 1, description: 'Set a config value', options: [{ name: 'key', type: 3, description: 'Setting name', required: true, choices: [{ name: 'channelId', value: 'channelId' }, { name: 'pingRoleId', value: 'pingRoleId' }, { name: 'title', value: 'title' }, { name: 'color', value: 'color' }, { name: 'footer', value: 'footer' }, { name: 'thumb', value: 'thumbnail' }, { name: 'dlUrl', value: 'downloadUrl' }, { name: 'liveMsg', value: 'liveMessage' }, { name: 'patchNote', value: 'patchNote' }] }, { name: 'val', type: 3, description: 'Setting value', required: true }] }, { name: 'stat', type: 1, description: 'Show current config' }, { name: 'test', type: 1, description: 'Send test update' }, { name: 'check', type: 1, description: 'Force check for updates' }] },
+  { name: 'role', description: 'Role management', options: [{ name: 'add', type: 1, description: 'Add role to user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'role', type: 8, description: 'Role', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'rem', type: 1, description: 'Remove role from user', options: [{ name: 'user', type: 6, description: 'User', required: true }, { name: 'role', type: 8, description: 'Role', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }, { name: 'all', type: 1, description: 'Give role to all members', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'rmall', type: 1, description: 'Remove role from all members', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'info', type: 1, description: 'Role info', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'create', type: 1, description: 'Create a role', options: [{ name: 'name', type: 3, description: 'Role name', required: true }, { name: 'col', type: 3, description: 'Hex color' }, { name: 'hoist', type: 5, description: 'Display separately' }, { name: 'ment', type: 5, description: 'Allow mentions' }] }, { name: 'delete', type: 1, description: 'Delete a role', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'edit', type: 1, description: 'Edit a role', options: [{ name: 'role', type: 8, description: 'Role', required: true }, { name: 'name', type: 3, description: 'New name' }, { name: 'col', type: 3, description: 'New color' }, { name: 'hoist', type: 5, description: 'Display separately' }, { name: 'ment', type: 5, description: 'Allow mentions' }] }, { name: 'list', type: 1, description: 'List all roles' }, { name: 'members', type: 1, description: 'List members with role', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }] },
+  { name: 'autorole', description: 'Auto-role on join', options: [{ name: 'add', type: 1, description: 'Add autorole', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'rem', type: 1, description: 'Remove autorole', options: [{ name: 'role', type: 8, description: 'Role', required: true }] }, { name: 'list', type: 1, description: 'List autoroles' }, { name: 'clear', type: 1, description: 'Clear all autoroles' }] },
+  { name: 'backup', description: 'Server backup', options: [{ name: 'create', type: 1, description: 'Create a backup' }, { name: 'list', type: 1, description: 'List backups' }, { name: 'info', type: 1, description: 'Backup info', options: [{ name: 'id', type: 3, description: 'Backup ID', required: true }] }, { name: 'delete', type: 1, description: 'Delete backup', options: [{ name: 'id', type: 3, description: 'Backup ID', required: true }] }] },
+  { name: 'load', description: 'Load backup', options: [{ name: 'id', type: 3, description: 'Backup ID', required: true }, { name: 'mode', type: 3, description: 'What to restore', required: true, choices: [{ name: 'Roles only', value: 'roles' }, { name: 'Channels only', value: 'channels' }, { name: 'All', value: 'all' }] }] },
+  { name: 'giveaway', description: 'Giveaways', options: [{ name: 'start', type: 1, description: 'Start a giveaway', options: [{ name: 'prize', type: 3, description: 'Prize name', required: true }, { name: 'dur', type: 3, description: 'Duration (e.g. 1h, 2d)', required: true }, { name: 'winners', type: 4, description: 'Number of winners' }, { name: 'req', type: 3, description: 'Requirement to enter' }, { name: 'ch', type: 7, description: 'Channel to post in' }] }, { name: 'end', type: 1, description: 'End a giveaway', options: [{ name: 'mid', type: 3, description: 'Giveaway message ID', required: true }] }, { name: 'reroll', type: 1, description: 'Reroll winners', options: [{ name: 'mid', type: 3, description: 'Giveaway message ID', required: true }] }, { name: 'list', type: 1, description: 'List active giveaways' }] },
+  { name: 'script', description: 'Script submissions', options: [{ name: 'submit', type: 1, description: 'Submit a script', options: [{ name: 'title', type: 3, description: 'Script title', required: true }, { name: 'desc', type: 3, description: 'Description', required: true }, { name: 'link', type: 3, description: 'Download link', required: true }] }, { name: 'approve', type: 1, description: 'Approve a script', options: [{ name: 'mid', type: 3, description: 'Submission message ID', required: true }, { name: 'notes', type: 3, description: 'Optional notes' }] }, { name: 'deny', type: 1, description: 'Deny a script', options: [{ name: 'mid', type: 3, description: 'Submission message ID', required: true }, { name: 'reason', type: 3, description: 'Reason' }] }] },
+  { name: 'eco', description: 'Economy commands', options: [{ name: 'bal', type: 1, description: 'Check balance', options: [{ name: 'user', type: 6, description: 'Target user' }] }, { name: 'daily', type: 1, description: 'Claim daily reward' }, { name: 'work', type: 1, description: 'Work for coins' }, { name: 'crime', type: 1, description: 'Commit a crime' }, { name: 'fish', type: 1, description: 'Go fishing' }, { name: 'hunt', type: 1, description: 'Go hunting' }, { name: 'mine', type: 1, description: 'Go mining' }, { name: 'dep', type: 1, description: 'Deposit coins', options: [{ name: 'amt', type: 4, description: 'Amount (0 = all)', required: true }] }, { name: 'with', type: 1, description: 'Withdraw coins', options: [{ name: 'amt', type: 4, description: 'Amount (0 = all)', required: true }] }, { name: 'give', type: 1, description: 'Give coins', options: [{ name: 'user', type: 6, description: 'Recipient', required: true }, { name: 'amt', type: 4, description: 'Amount', required: true }] }, { name: 'lb', type: 1, description: 'Top 10 richest users' }, { name: 'shop', type: 1, description: 'View shop' }, { name: 'buy', type: 1, description: 'Buy an item', options: [{ name: 'item', type: 3, description: 'Item ID', required: true }] }, { name: 'inv', type: 1, description: 'View inventory', options: [{ name: 'user', type: 6, description: 'Target user' }] }] },
+  { name: 'gamble', description: 'Gamble coins', options: [{ name: 'slots', type: 1, description: 'Play slots', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }] }, { name: 'flip', type: 1, description: 'Coin flip', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }, { name: 'choice', type: 3, description: 'Heads or tails', required: true, choices: [{ name: 'Heads', value: 'heads' }, { name: 'Tails', value: 'tails' }] }] }, { name: 'dice', type: 1, description: 'Roll dice', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }, { name: 'pred', type: 3, description: 'Low, high, or exact', required: true, choices: [{ name: 'Low', value: 'low' }, { name: 'High', value: 'high' }, { name: 'Exact', value: 'exact' }] }, { name: 'num', type: 4, description: 'Number if exact' }] }, { name: 'roulette', type: 1, description: 'Play roulette', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }, { name: 'choice', type: 3, description: 'Red, black, even, or odd', required: true, choices: [{ name: 'Red', value: 'red' }, { name: 'Black', value: 'black' }, { name: 'Even', value: 'even' }, { name: 'Odd', value: 'odd' }] }] }, { name: 'bj', type: 1, description: 'Play blackjack', options: [{ name: 'bet', type: 4, description: 'Bet amount', required: true }] }, { name: 'rob', type: 1, description: 'Rob another user', options: [{ name: 'user', type: 6, description: 'Target', required: true }] }] },
+  { name: 'heist', description: 'Organize a heist', options: [{ name: 'start', type: 1, description: 'Start a heist', options: [{ name: 'bet', type: 4, description: 'Minimum bet', required: true }] }, { name: 'join', type: 1, description: 'Join a heist', options: [{ name: 'bet', type: 4, description: 'Your bet', required: true }] }, { name: 'status', type: 1, description: 'Check heist status' }] }
+];
